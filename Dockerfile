@@ -2682,11 +2682,6 @@ ENV DB_TYPE=mysql \
     MAX_VOLUME=150 \
     AUTO_DISCONNECT_SECONDS=300
 
-# بيانات MariaDB (يمكن إرفاق Volume من Railway على هذا المسار ليبقى
-# الطابور وقوائم التشغيل بعد إعادة النشر — اختياري).
-VOLUME ["/var/lib/mysql"]
-
-# ملاحظة: لا يوجد EXPOSE — المنفذ 2333 داخلي فقط كما هو مطلوب.
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=5 \
     CMD curl -fsS -H "Authorization: ${LAVALINK_PASSWORD}" \
