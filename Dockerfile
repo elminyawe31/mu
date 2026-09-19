@@ -313,6 +313,8 @@ RUN cat > /opt/bot/music.py <<'MUSICPY_EOF'
 #  elminyawe bot — بوت موسيقى ديسكورد (Lavalink + وضع احتياطي yt-dlp/ffmpeg)
 #  ─────────────────────────────────────────────────────────────────────────
 #  • أمر play يعرض قائمة نتائج مرقّمة وينتظر اختيار المستخدم رقم الأغنية
+#  • كل الأوامر تعمل بالبادئة (!play) أو بدونها، وكذلك كأوامر سلاش (/play)
+#  • كل الأوامر تعمل بالبادئة (!play) أو بدونها، وكذلك كأوامر سلاش (/play)
 #  • لا إضافة تلقائية لقائمة الانتظار ولا تشغيل تلقائي (AutoPlay مُعطّل)
 #  • عند فشل تحميل يوتيوب في Lavalink: محاولة إصلاح تلقائية عبر yt-dlp
 #    (يستخرج رابط الصوت المباشر ويبثّه عبر مصدر HTTP في Lavalink)
@@ -333,6 +335,7 @@ import discord
 import wavelink
 import yt_dlp
 import pymysql
+from discord import app_commands
 from discord.ext import commands
 
 # ─────────────────────────────────────────────
@@ -660,7 +663,7 @@ class ElminyaweBot(commands.Bot):
             command_prefix=build_prefix(),
             intents=intents,
             help_command=None,
-            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 Only ELMINYAWE"),
+            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 play أو /play — اسم الأغنية"),
         )
 
     async def setup_hook(self):
@@ -701,8 +704,53 @@ class ElminyaweBot(commands.Bot):
 
         await self.add_cog(MusicCog(self))
 
+        # ── تسجيل أوامر السلاش (/) ──────────────────────────────────
+        # المزامنة العالمية تغطي كل السيرفرات (قد تظهر فيها خلال دقائق/ساعة)،
+        # والمزامنة داخل السيرفرات (on_ready) تجعلها فورية. GUILD_ID اختياري
+        # لتسجيل فوري مبكر في سيرفر محدد قبل اتصال الـ Gateway.
+        self._global_sync_ok = False
+        try:
+            n = await self.tree.sync()
+            self._global_sync_ok = True
+            log.info(f"✅ سُجّلت {len(n)} أمر سلاش عالمياً")
+        except Exception as e:
+            log.warning(f"⚠️ المزامنة العالمية لأوامر السلاش فشلت: {e!r}")
+        gid_env = os.getenv("GUILD_ID", "").strip()
+        if gid_env.isdigit():
+            try:
+                gobj = discord.Object(id=int(gid_env))
+                self.tree.copy_global_to(guild=gobj)
+                n = await self.tree.sync(guild=gobj)
+                log.info(f"✅ سُجّلت {len(n)} أمر سلاش فورياً داخل السيرفر {gid_env}")
+            except Exception as e:
+                log.warning(f"⚠️ مزامنة السلاش للسيرفر {gid_env} فشلت: {e!r}")
+
         if TEST_MODE:
             self.loop.create_task(run_test_flow(self))
+
+    async def on_ready(self):
+        """مزامنة أوامر السلاش فورياً داخل كل سيرفر يتواجد به البوت (مرة واحدة)."""
+        if getattr(self, "_guild_sync_done", False):
+            return
+        self._guild_sync_done = True
+        gid_env = os.getenv("GUILD_ID", "").strip()
+        for g in list(self.guilds):
+            if gid_env.isdigit() and str(g.id) == gid_env:
+                continue    # سُجّلت بالفعل في setup_hook
+            try:
+                gobj = discord.Object(id=g.id)
+                self.tree.copy_global_to(guild=gobj)
+                n = await self.tree.sync(guild=gobj)
+                log.info(f"✅ أوامر السلاش جاهزة فوراً داخل السيرفر {g.id} ({len(n)} أمراً)")
+            except Exception as e:
+                log.warning(f"⚠️ مزامنة السلاش للسيرفر {g.id} فشلت: {e!r}")
+        if not getattr(self, "_global_sync_ok", False):
+            try:
+                n = await self.tree.sync()
+                self._global_sync_ok = True
+                log.info(f"✅ سُجّلت {len(n)} أمر سلاش عالمياً (محاولة on_ready)")
+            except Exception as e:
+                log.warning(f"⚠️ المزامنة العالمية لا تزال تفشل: {e!r}")
 
 
 # ─────────────────────────────────────────────
@@ -745,6 +793,15 @@ class MusicCog(commands.Cog):
     #  أدوات الصوت
     # ─────────────────────────────────────────
 
+    async def _defer_if_slash(self, ctx):
+        """أوامر السلاش مهلة ردها 3 ثوانٍ فقط — defer فوري يمنحنا حتى 15 دقيقة
+        للبحث والتحميل. في وضع البادئة لا يفعل شيئاً (لا يوجد interaction)."""
+        try:
+            if ctx.interaction is not None and not ctx.interaction.response.is_done():
+                await ctx.interaction.response.defer(thinking=True)
+        except Exception as e:
+            log.debug(f"defer skipped: {e!r}")
+
     def _target_channel(self, ctx) -> discord.abc.Connectable | None:
         return ctx.author.voice.channel if (ctx.author and ctx.author.voice) else None
 
@@ -752,11 +809,11 @@ class MusicCog(commands.Cog):
         """الاتصال/الانتقال للقناة الصوتية للمستخدم. يعيد مشغّل الصوت أو None."""
         ch = self._target_channel(ctx)
         if ch is None:
-            await ctx.reply("🔇 ادخل قناة صوتية أولاً حتى أستطيع التشغيل.", mention_on_error=True)
+            await ctx.reply("🔇 ادخل قناة صوتية أولاً حتى أستطيع التشغيل.")
             return None
         perms = ch.permissions_for(ctx.guild.me)
         if not perms.connect or not perms.speak:
-            await ctx.reply("⛔ ليس لدي صلاحية الاتصال/التحدث في تلك القناة.", mention_on_error=True)
+            await ctx.reply("⛔ ليس لدي صلاحية الاتصال/التحدث في تلك القناة.")
             return None
 
         vc = ctx.guild.voice_client
@@ -772,7 +829,7 @@ class MusicCog(commands.Cog):
                 await vc.move_to(ch)
         except Exception as e:
             log.error(f"voice connect failed: {e!r}")
-            await ctx.reply(f"❌ فشل الاتصال بالقناة الصوتية: `{e}`", mention_on_error=True)
+            await ctx.reply(f"❌ فشل الاتصال بالقناة الصوتية: `{e}`")
             return None
         return vc
 
@@ -854,13 +911,14 @@ class MusicCog(commands.Cog):
     #  أمر play — القائمة المرقّمة ثم اختيار رقم
     # ─────────────────────────────────────────
 
-    @commands.command(name="play", aliases=["p"], help="تشغيل أغنية من يوتيوب/سبوتيفاي أو رابط مباشر")
+    @app_commands.describe(query="اسم الأغنية أو الرابط")
+    @commands.hybrid_command(name="play", aliases=["p"], help="تشغيل أغنية من يوتيوب/سبوتيفاي أو رابط مباشر", description="تشغيل أغنية من يوتيوب/سبوتيفاي أو رابط مباشر")
     async def play(self, ctx: commands.Context, *, query: str = None):
+        await self._defer_if_slash(ctx)
         if not query:
             await ctx.reply(
                 "✏️ اكتب اسم الأغنية أو الرابط بعد الأمر:\n"
                 f"`{PREFIX}play ياه تامر عاشور`",
-                mention_on_error=True,
             )
             return
 
@@ -893,7 +951,7 @@ class MusicCog(commands.Cog):
             ]
 
         if not results:
-            await ctx.reply("😕 لا توجد نتائج للبحث — جرّب اسماً آخر.", mention_on_error=True)
+            await ctx.reply("😕 لا توجد نتائج للبحث — جرّب اسماً آخر.")
             return
 
         chosen = await self._selection_menu(ctx, query, results)
@@ -918,7 +976,7 @@ class MusicCog(commands.Cog):
         embed.set_footer(
             text=f"طلبها: {ctx.author.display_name} • المحرك: {'Lavalink' if ENGINE == 'lavalink' else 'yt-dlp بديل'}"
         )
-        msg = await ctx.reply(embed=embed, mention_on_error=True)
+        msg = await ctx.reply(embed=embed)
 
         # إلغاء أي بحث معلّق سابق لنفس المستخدم (epoch جديد)
         epoch = object()
@@ -988,7 +1046,6 @@ class MusicCog(commands.Cog):
             await ctx.reply(
                 "⚠️ روابط Spotify تعمل فقط عندما يكون محرك Lavalink نشطاً.\n"
                 "جرّب البحث بالاسم بدلاً من الرابط.",
-                mention_on_error=True,
             )
             return
 
@@ -996,10 +1053,10 @@ class MusicCog(commands.Cog):
             try:
                 tracks, playlist = await self._lavalink_load(url)
             except Exception as e:
-                await ctx.reply(f"❌ فشل تحميل الرابط: `{e}`", mention_on_error=True)
+                await ctx.reply(f"❌ فشل تحميل الرابط: `{e}`")
                 return
             if not tracks:
-                await ctx.reply("😕 لم أجد شيئاً في هذا الرابط.", mention_on_error=True)
+                await ctx.reply("😕 لم أجد شيئاً في هذا الرابط.")
                 return
             if playlist and len(tracks) > 1:
                 vc = await self._ensure_voice(ctx)
@@ -1011,7 +1068,6 @@ class MusicCog(commands.Cog):
                     q.extend(tracks)
                     await ctx.reply(
                         f"📜 أُضيفت **{len(tracks)}** أغنية من قائمة التشغيل «{playlist.name}» إلى الطابور.",
-                        mention_on_error=True,
                     )
                 else:
                     first = tracks.pop(0)
@@ -1019,7 +1075,6 @@ class MusicCog(commands.Cog):
                     await self._lavalink_start(ctx, first, first.title, quiet=True)
                     await ctx.reply(
                         f"📜 تشغيل قائمة التشغيل «{playlist.name}» — **{len(tracks) + 1}** أغنية.",
-                        mention_on_error=True,
                     )
                 return
             await self._lavalink_start(ctx, tracks[0], tracks[0].title)
@@ -1029,12 +1084,11 @@ class MusicCog(commands.Cog):
                 await ctx.reply(
                     "⚠️ في وضع الاحتياط (yt-dlp) قوائم التشغيل الكاملة غير مدعومة — "
                     "سيتم تشغيل أول أغنية فيها.",
-                    mention_on_error=True,
                 )
             try:
                 info = await ytdlp_resolve(url)
             except Exception as e:
-                await ctx.reply(f"❌ فشل استخراج الرابط: `{e}`", mention_on_error=True)
+                await ctx.reply(f"❌ فشل استخراج الرابط: `{e}`")
                 return
             await self._ff_play_resolved(ctx, info)
 
@@ -1480,8 +1534,9 @@ class MusicCog(commands.Cog):
     #  الأوامر
     # ─────────────────────────────────────────
 
-    @commands.command(name="queue", aliases=["q"], help="عرض قائمة الانتظار")
+    @commands.hybrid_command(name="queue", aliases=["q"], help="عرض قائمة الانتظار", description="عرض قائمة الانتظار")
     async def queue_(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         vc = ctx.guild.voice_client
         current = None
@@ -1520,8 +1575,9 @@ class MusicCog(commands.Cog):
         )
         await ctx.reply(embed=embed, mention_author=False)
 
-    @commands.command(name="nowplaying", aliases=["np"], help="عرض ما يُشغّل الآن مع شريط التقدم")
+    @commands.hybrid_command(name="nowplaying", aliases=["np"], help="عرض ما يُشغّل الآن مع شريط التقدم", description="عرض ما يُشغّل الآن مع شريط التقدم")
     async def nowplaying(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         vc = ctx.guild.voice_client
         if isinstance(vc, wavelink.Player) and vc.current:
@@ -1540,8 +1596,9 @@ class MusicCog(commands.Cog):
             return
         await ctx.reply("😴 لا يوجد شيء قيد التشغيل الآن.", mention_author=False)
 
-    @commands.command(name="skip", aliases=["s", "next"], help="تخطي الأغنية الحالية")
+    @commands.hybrid_command(name="skip", aliases=["s", "next"], help="تخطي الأغنية الحالية", description="تخطي الأغنية الحالية")
     async def skip(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         vc = ctx.guild.voice_client
         if vc is None:
@@ -1571,8 +1628,9 @@ class MusicCog(commands.Cog):
         await ctx.reply("⏭ تم التخطي.", mention_author=False)
         vc.stop()
 
-    @commands.command(name="pause", help="إيقاف مؤقت")
+    @commands.hybrid_command(name="pause", help="إيقاف مؤقت", description="إيقاف مؤقت")
     async def pause(self, ctx):
+        await self._defer_if_slash(ctx)
         vc = ctx.guild.voice_client
         if isinstance(vc, wavelink.Player):
             if getattr(vc, "playing", False) and not getattr(vc, "paused", False):
@@ -1585,8 +1643,9 @@ class MusicCog(commands.Cog):
             return
         await ctx.reply("😕 لا يوجد تشغيل لإيقافه.", mention_author=False)
 
-    @commands.command(name="resume", aliases=["unpause"], help="استئناف التشغيل")
+    @commands.hybrid_command(name="resume", aliases=["unpause"], help="استئناف التشغيل", description="استئناف التشغيل")
     async def resume(self, ctx):
+        await self._defer_if_slash(ctx)
         vc = ctx.guild.voice_client
         if isinstance(vc, wavelink.Player):
             if getattr(vc, "paused", False):
@@ -1599,8 +1658,9 @@ class MusicCog(commands.Cog):
             return
         await ctx.reply("😕 لا يوجد إيقاف مؤقت.", mention_author=False)
 
-    @commands.command(name="stop", aliases=["st"], help="إيقاف التشغيل ومسح الطابور")
+    @commands.hybrid_command(name="stop", aliases=["st"], help="إيقاف التشغيل ومسح الطابور", description="إيقاف التشغيل ومسح الطابور")
     async def stop_(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         vc = ctx.guild.voice_client
         self._queue_of(gid).clear()
@@ -1621,8 +1681,10 @@ class MusicCog(commands.Cog):
         await ctx.reply("⏹ تم الإيقاف ومسح الطابور.", mention_author=False)
         self._idle_since[gid] = time.monotonic()
 
-    @commands.command(name="volume", aliases=["vol", "v"], help="ضبط الصوت (0-200)")
+    @app_commands.describe(value="مستوى الصوت من 0 إلى 200")
+    @commands.hybrid_command(name="volume", aliases=["vol", "v"], help="ضبط الصوت (0-200)", description="ضبط الصوت (0-200)")
     async def volume(self, ctx, value: int = None):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         if value is None:
             await ctx.reply(f"🔊 الصوت الحالي: `{self._current_volume(ctx.guild)}%`", mention_author=False)
@@ -1647,8 +1709,10 @@ class MusicCog(commands.Cog):
         self._save_settings(gid)
         await ctx.reply(f"🔊 تم ضبط الصوت إلى `{value}%`", mention_author=False)
 
-    @commands.command(name="loop", aliases=["repeat", "l"], help="التكرار: off / track / queue")
+    @app_commands.describe(mode="off / track / queue")
+    @commands.hybrid_command(name="loop", aliases=["repeat", "l"], help="التكرار: off / track / queue", description="التكرار: off / track / queue")
     async def loop(self, ctx, mode: str = None):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         if mode is None:
             await ctx.reply(
@@ -1672,8 +1736,9 @@ class MusicCog(commands.Cog):
         emoji = {"off": "➡️", "track": "🔂", "queue": "🔁"}[mode]
         await ctx.reply(f"{emoji} وضع التكرار: `{mode}`", mention_author=False)
 
-    @commands.command(name="shuffle", aliases=["sh"], help="خلط الطابور")
+    @commands.hybrid_command(name="shuffle", aliases=["sh"], help="خلط الطابور", description="خلط الطابور")
     async def shuffle(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         q = self._queue_of(gid)
         if len(q) < 2:
@@ -1682,8 +1747,10 @@ class MusicCog(commands.Cog):
         random.shuffle(q)
         await ctx.reply(f"🔀 تم خلط **{len(q)}** أغنية في الطابور.", mention_author=False)
 
-    @commands.command(name="skipto", aliases=["stt"], help="التشغيل مباشرة من موضع في الطابور")
+    @app_commands.describe(index="الموضع في الطابور")
+    @commands.hybrid_command(name="skipto", aliases=["stt"], help="التشغيل مباشرة من موضع في الطابور", description="التشغيل مباشرة من موضع في الطابور")
     async def skipto(self, ctx, index: int = None):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         if index is None or index < 1:
             await ctx.reply(f"✏️ الاستخدام: `{PREFIX}skipto رقم` (الموضع في الطابور)", mention_author=False)
@@ -1710,9 +1777,12 @@ class MusicCog(commands.Cog):
         else:
             nxt = q.pop(0)
             await self._ff_start(ctx.guild, vc, nxt)
+            await ctx.reply(f"⏭ تشغيل مباشر: **{nxt.get('title') if isinstance(nxt, dict) else nxt}**", mention_author=False)
 
-    @commands.command(name="remove", aliases=["rm"], help="إزالة أغنية من الطابور")
+    @app_commands.describe(index="الموضع في الطابور")
+    @commands.hybrid_command(name="remove", aliases=["rm"], help="إزالة أغنية من الطابور", description="إزالة أغنية من الطابور")
     async def remove(self, ctx, index: int = None):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         if index is None or index < 1:
             await ctx.reply(f"✏️ الاستخدام: `{PREFIX}remove رقم`", mention_author=False)
@@ -1725,8 +1795,10 @@ class MusicCog(commands.Cog):
         title = getattr(item, "title", None) or (item.get("title") if isinstance(item, dict) else str(item))
         await ctx.reply(f"🗑️ أُزيلت: **{title}**", mention_author=False)
 
-    @commands.command(name="seek", help="الانتقال إلى زمن (mm:ss) — Lavalink فقط")
+    @app_commands.describe(position="الزمن بصيغة mm:ss مثل 1:30")
+    @commands.hybrid_command(name="seek", help="الانتقال إلى زمن (mm:ss) — Lavalink فقط", description="الانتقال إلى زمن (mm:ss) — Lavalink فقط")
     async def seek(self, ctx, position: str = None):
+        await self._defer_if_slash(ctx)
         vc = ctx.guild.voice_client
         if position is None:
             await ctx.reply(f"✏️ الاستخدام: `{PREFIX}seek 1:30`", mention_author=False)
@@ -1749,14 +1821,16 @@ class MusicCog(commands.Cog):
             return
         await ctx.reply("⚠️ الانتقال الزمني مدعوم فقط مع محرك Lavalink.", mention_author=False)
 
-    @commands.command(name="join", aliases=["j"], help="دعوة البوت لقناتك الصوتية")
+    @commands.hybrid_command(name="join", aliases=["j"], help="دعوة البوت لقناتك الصوتية", description="دعوة البوت لقناتك الصوتية")
     async def join(self, ctx):
+        await self._defer_if_slash(ctx)
         vc = await self._ensure_voice(ctx)
         if vc is not None:
             await ctx.reply(f"👋 انضممت إلى **{vc.channel.name}**", mention_author=False)
 
-    @commands.command(name="leave", aliases=["dc", "disconnect"], help="خروج البوت من القناة")
+    @commands.hybrid_command(name="leave", aliases=["dc", "disconnect"], help="خروج البوت من القناة", description="خروج البوت من القناة")
     async def leave(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         vc = ctx.guild.voice_client
         if vc is None:
@@ -1766,8 +1840,9 @@ class MusicCog(commands.Cog):
         await vc.disconnect(force=True)
         await ctx.reply("👋 خرجت من القناة. اراك لاحقاً!", mention_author=False)
 
-    @commands.command(name="247", aliases=["24/7", "stay"], help="تفعيل/تعطيل البقاء 24/7")
+    @commands.hybrid_command(name="247", aliases=["24/7", "stay"], help="تفعيل/تعطيل البقاء 24/7", description="تفعيل/تعطيل البقاء 24/7")
     async def stay(self, ctx):
+        await self._defer_if_slash(ctx)
         gid = ctx.guild.id
         cur = self.stay_247.get(gid, False)
         self.stay_247[gid] = not cur
@@ -1779,8 +1854,9 @@ class MusicCog(commands.Cog):
         state = "مفعّل ✅ (سأبقى في القناة)" if self.stay_247[gid] else "معطّل ⛔ (سأخرج عند الخمول)"
         await ctx.reply(f"🕰️ وضع 24/7: {state}", mention_author=False)
 
-    @commands.command(name="history", aliases=["hist"], help="آخر ما تم تشغيله")
+    @commands.hybrid_command(name="history", aliases=["hist"], help="آخر ما تم تشغيله", description="آخر ما تم تشغيله")
     async def history(self, ctx):
+        await self._defer_if_slash(ctx)
         rows = await asyncio.to_thread(
             self.db.fetchall,
             "SELECT title, user_name, played_at FROM history WHERE guild_id=%s ORDER BY id DESC LIMIT 10",
@@ -1797,8 +1873,9 @@ class MusicCog(commands.Cog):
                               color=discord.Color.gold())
         await ctx.reply(embed=embed, mention_author=False)
 
-    @commands.command(name="ping", help="سرعة الاستجابة وحالة المحرك")
+    @commands.hybrid_command(name="ping", help="سرعة الاستجابة وحالة المحرك", description="سرعة الاستجابة وحالة المحرك")
     async def ping(self, ctx):
+        await self._defer_if_slash(ctx)
         engine = "🛡 Lavalink" if ENGINE == "lavalink" else "🔧 وضع بديل yt-dlp/ffmpeg"
         db = "✅" if self.db.available else "⚠️ غير متاحة"
         embed = discord.Embed(
@@ -1810,12 +1887,13 @@ class MusicCog(commands.Cog):
         )
         await ctx.reply(embed=embed, mention_author=False)
 
-    @commands.command(name="help", aliases=["h", "commands"], help="قائمة الأوامر")
+    @commands.hybrid_command(name="help", aliases=["h", "commands"], help="قائمة الأوامر", description="قائمة الأوامر")
     async def help_cmd(self, ctx):
+        await self._defer_if_slash(ctx)
         engine = "🛡 Lavalink (مستقر)" if ENGINE == "lavalink" else "🔧 وضع بديل yt-dlp/ffmpeg"
         desc = (
             "## 🎵 بوت الموسيقى — أوامري\n"
-            "الأوامر تعمل **بالبادئة** `!` أو **بدونها** مباشرة.\n\n"
+            "الأوامر تعمل **بالبادئة** `!` أو **بدونها**، وكذلك كلها كأوامر **سلاش** `/` (مثل `/play`).\n\n"
             "### ▶️ التشغيل\n"
             f"`{PREFIX}play <اسم أو رابط>` — يعرض قائمة نتائج مرقّمة، اكتب **رقم** الأغنية لتشغيلها\n"
             f"`{PREFIX}queue` — عرض الطابور • `{PREFIX}np` — شغّال الآن\n"
