@@ -1,2779 +1,1977 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 # ═══════════════════════════════════════════════════════════════════════════
-#  🎵 Music Discord Bot — ملف واحد شامل كل شيء (جاهز لـ GitHub + Railway)
-# ─────────────────────────────────────────────────────────────────────────
-#  هذا الملف هو المشروع بالكامل: كود البوت + Lavalink v4 + MariaDB.
-#  لا يحتاج أي ملف آخر بجانبه إطلاقاً.
 #
-#  ▶ الخطوات على Railway:
-#    1) أنشئ مستودع GitHub جديداً وضع هذا الملف باسم  Dockerfile
-#       (حرف D كبير، بدون امتداد) في جذر المستودع.
-#    2) Railway → New Project → Deploy from GitHub repo → اختر المستودع.
-#    3) Railway سيبني الصورة ويشغّل كل شيء تلقائياً (لا حاجة لأي إعدادات).
+#   ELMINYAWE — ملف واحد متكامل: MariaDB + Lavalink v4 + بوت موسيقى ديسكورد
 #
-#  ▶ تغيير التوكن مستقبلاً (اختر إحدى الطريقتين):
-#    • الطريقة 1: عدّل سطر ENV DISCORD_TOKEN بالأسفل داخل هذا الملف ثم أعد النشر.
-#    • الطريقة 2 (أسرع): Railway → خدمتك → Variables → أنشئ متغيراً باسم
-#      DISCORD_TOKEN بقيمة التوكن الجديد — متغيرات Railway تتغلب على القيمة
-#      المكتوبة داخل الملف دون الحاجة لتعديله.
+#   ── المميزات ────────────────────────────────────────────────────────────
+#   • أمر play يبحث ويرسل قائمة نتائج مرقّمة ثم ينتظر اختيارك رقم الأغنية
+#   • لا يضيف البوت أي قائمة انتظار من تلقاء نفسه — يشغّل ما تختاره فقط
+#   • Lavalink v4 + إضافة يوتيوب مع OAuth (رمز التحديث الثابت مضمّن)
+#     وقائمة عملاء مختارة تعمل مع IPs مراكز البيانات
+#   • إصلاح تلقائي: إذا فشل تحميل يوتيوب يُستخرج رابط الصوت عبر yt-dlp
+#     ويُبثّ مباشرة عبر مصدر HTTP — بلا توقف
+#   • وضع احتياطي كامل: إذا تعذّر الوصول لـ Lavalink يعمل البوت بـ yt-dlp/ffmpeg
+#   • سبوتيفاي (بحث + روابط) عبر LavaSrc — قاعدة بيانات MariaDB للتاريخ والإعدادات
+#   • أوامر كاملة: play / queue / skip / pause / resume / stop / volume / loop /
+#     shuffle / skipto / remove / seek / 247 / history / nowplaying / ping / help
+#   • شريط تقدّم حيّ داخل رسالة "شغّال الآن" تتحدّث تلقائياً
 #
-#  ▶ المنفذ 2333 (Lavalink) داخلي 100%:
-#    يستمع على 127.0.0.1 داخل الحاوية ولا يُفتح للإنترنت إطلاقاً — البوت
-#    يتحدث معه محلياً فقط، لذلك لا يوجد أي منفذ عام في Railway.
+#   ── قبل التشغيل (مهم!) ─────────────────────────────────────────────────
+#   1) ضع توكن بوتك في متغير البيئة DISCORD_TOKEN (أسفله في قسم ENV)
+#      أو اضبطه كمتغيّر Variables في Railway (يفضّل).
+#   2) في Railway: أنشئ Volume واربطه بالمسار  /var/lib/mysql
+#   3) (اختياري) إذا ظهرت رسالة "Sign in to confirm you're not a bot" فأضف
+#      متغير YOUTUBE_COOKIES في Railway وضع فيه محتوى ملف cookies.txt
+#      (من متصفح مسجّل الدخول لليوتيوب) ليتجاوز البوت فحص الـ IP.
+#   4) لا حاجة لأي إعدادات أخرى — كل شيء مضمّن في هذا الملف.
 #
-#  ▶ ثبات الصوت (حل مشكلة انقطاع خوادم Lavalink الخارجية):
-#    • Lavalink يعمل داخل نفس الحاوية — لا خوادم خارجية تنقطع أبداً.
-#    • استئناف جلسة تلقائي (session resuming) عند أي وميض شبكة.
-#    • مراقب داخلي في البوت يعيد بناء المشغل ويكمل الأغنية من نفس الثانية
-#      إذا أُعيد تشغيل Lavalink.
-#    • مشرف على مستوى الحاوية يعيد تشغيل Lavalink/MariaDB تلقائياً إذا توقفوا.
-#    • البوت نفسه يعاد تشغيله تلقائياً مع backoff عند أي انهيار.
-#
-#  ▶ التشغيل المحلي (اختياري):
-#      docker build -t musicbot .
-#      docker run -d --name musicbot --restart unless-stopped musicbot
-#
-#  ▶ متغيرات بيئة اختيارية (كلها لها قيم افتراضية جاهزة):
-#      LAVALINK_HEAP=512m        ذاكرة Lavalink (قلّلها إلى 256m إذا كانت
-#                                خطة Railway محدودة الذاكرة)
-#      PREFIX=?                  بادئة الأوامر النصية
-#      SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET   لتفعيل روابط Spotify
-#      DEEZER_ENABLED=true + DEEZER_MASTER_KEY=...   لتفعيل Deezer (اختياري)
-#      AUTO_DISCONNECT_SECONDS=300   خروج تلقائي عند الخمول (0 = تعطيل)
 # ═══════════════════════════════════════════════════════════════════════════
 
-FROM python:3.12-bookworm
+FROM python:3.11-slim-bookworm
 
-# ─────────────── Java 21 (Temurin) + أدوات النظام ───────────────
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# ── حزم النظام: Java 17 لتشغيل Lavalink + ffmpeg للبث الاحتياطي + MariaDB ──
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        wget gpg apt-transport-https ca-certificates curl tini procps tzdata \
-    && mkdir -p /etc/apt/keyrings \
-    && wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public \
-        | gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo $VERSION_CODENAME) main" \
-        > /etc/apt/sources.list.d/adoptium.list \
-    && apt-get update && apt-get install -y --no-install-recommends temurin-21-jre \
-    && apt-get purge -y wget gpg \
+        openjdk-17-jre-headless \
+        ffmpeg \
+        mariadb-server \
+        supervisor \
+        curl \
+        ca-certificates \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
-# ─────────────── MariaDB server ───────────────
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends mariadb-server \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld
+# ── مكتبات بايثون الثابتة ──────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+        "discord.py==2.4.0" \
+        "wavelink==3.5.2" \
+        "PyNaCl>=1.5" \
+        "davey>=0.1" \
+        "PyMySQL>=1.1" \
+        "PyYAML>=6.0.1" \
+        yt-dlp
 
-# ─────────────── Lavalink 4.2.2 + الإضافات (تحميل مسبق أثناء البناء) ───────────────
-RUN mkdir -p /opt/lavalink/plugins /opt/lavalink/logs \
-    && curl -fsSL -o /opt/lavalink/Lavalink.jar \
-        "https://github.com/lavalink-devs/Lavalink/releases/download/4.2.2/Lavalink.jar" \
-    && curl -fsSL -o /opt/lavalink/plugins/youtube-plugin-1.18.2.jar \
-        "https://maven.lavalink.dev/releases/dev/lavalink/youtube/youtube-plugin/1.18.2/youtube-plugin-1.18.2.jar" \
-    && curl -fsSL -o /opt/lavalink/plugins/lavasrc-plugin-4.8.3.jar \
-        "https://maven.lavalink.dev/releases/com/github/topi314/lavasrc/lavasrc-plugin/4.8.3/lavasrc-plugin-4.8.3.jar" \
-    && chmod 755 /opt/lavalink/Lavalink.jar
+# ── تحميل Lavalink v4 ───────────────────────────────────────────────────────
+RUN mkdir -p /opt/lavalink /opt/bot \
+    && curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 \
+         -o /opt/lavalink/Lavalink.jar \
+         "https://github.com/lavalink-devs/Lavalink/releases/download/4.2.2/Lavalink.jar" \
+    && ls -la /opt/lavalink/Lavalink.jar
 
-# ─────────────── مكتبات البوت (مدمجة داخل الملف) ───────────────
-WORKDIR /app
-COPY <<'ZEOF_REQUIREMENTS' /tmp/requirements.txt
-discord.py==2.7.1
-wavelink==3.5.2
-aiomysql==0.3.2
-aiosqlite==0.20.0
-PyNaCl==1.6.2
-davey==0.1.6
-python-dotenv==1.0.1
-ZEOF_REQUIREMENTS
+# ═══════════════════════════════════════════════════════════════════════════
+#  متغيّرات البيئة — الافتراضيات الثابتة
+#  ⚠️  ضع توكن بوتك في DISCORD_TOKEN (أو اضبطه في Railway Variables)
+#  🔒 رمز تحديث يوتيوب OAuth ثابت دائم — لا يتغيّر مع كل إقلاع
+# ═══════════════════════════════════════════════════════════════════════════
+ENV DISCORD_TOKEN="" \
+    DISCORD_PREFIX="!" \
+    LAVALINK_HOST="127.0.0.1" \
+    LAVALINK_PORT="2008" \
+    LAVALINK_PASSWORD="ELMINYAWE" \
+    YT_REFRESH_TOKEN="1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw" \
+    YT_CLIENTS="MUSIC,TV,TVHTML5_SIMPLY,ANDROID_VR" \
+    SPOTIFY_CLIENT_ID="b9a4b5775f1847a2b072573589b530f7" \
+    SPOTIFY_CLIENT_SECRET="682ef411fa5942d28bfe6c409e90f202" \
+    YOUTUBE_COOKIES="" \
+    YOUTUBE_COOKIES_FILE="" \
+    MYSQL_ROOT_PASSWORD="ElMinyaweDB2026" \
+    MYSQL_DATABASE="musicbot" \
+    JAVA_OPTS="-Xms64m -Xmx512m" \
+    IDLE_DISCONNECT_SEC="300"
 
-
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-
-# ─────────────── كود البوت الكامل (مدمج داخل الملف) ───────────────
-COPY <<'ZEOF_CONFIG_PY' /app/config.py
+# ── مولّد إعدادات Lavalink (يكتب application.yml من متغيرات البيئة) ─────────
+RUN cat > /opt/bot/gen_lavalink_config.py <<'GENCFG_EOF'
+# -*- coding: utf-8 -*-
 """
-Hybrid configuration loader.
-
-Priority: environment variables > .env file > built-in defaults.
-
-This makes the bot work everywhere:
-  - Docker (all-in-one): everything comes from environment variables.
-  - Local run: create a `.env` file next to main.py (see .env.example).
+elminyawe — مولّد إعدادات Lavalink (application.yml)
+يُنشئ الملف من متغيرات البيئة عند كل إقلاع، ثم يتحقق من صحة YAML الناتج.
 """
-
 import os
-
-from dotenv import load_dotenv
-
-# Loads .env from the current working directory if present.
-# Existing environment variables are NEVER overridden by .env (hybrid behaviour).
-load_dotenv(override=False)
-
-
-def _get(key: str, default: str = "") -> str:
-    value = os.getenv(key)
-    if value is None or value.strip() == "":
-        return default
-    return value.strip()
-
-
-def _get_int(key: str, default: int) -> int:
-    try:
-        return int(_get(key, str(default)))
-    except ValueError:
-        return default
-
-
-def _get_bool(key: str, default: bool = False) -> bool:
-    raw = _get(key, "1" if default else "0").lower()
-    return raw in ("1", "true", "yes", "on", "enabled")
-
-
-class Config:
-    """All runtime configuration in one place."""
-
-    # ------------------------------------------------------------- Discord
-    # Accepts DISCORD_TOKEN (preferred) or BOT_TOKEN (legacy name).
-    DISCORD_TOKEN: str = _get("DISCORD_TOKEN", _get("BOT_TOKEN"))
-    PREFIX: str = _get("PREFIX", "?")
-    ACTIVITY: str = _get("ACTIVITY", "music | /play")
-
-    # ----------------------------------------------------------- Lavalink
-    LAVALINK_HOST: str = _get("LAVALINK_HOST", "127.0.0.1")
-    LAVALINK_PORT: int = _get_int("LAVALINK_PORT", 2333)
-    LAVALINK_PASSWORD: str = _get("LAVALINK_PASSWORD", "youshallnotpass")
-    # Seconds of inactivity (nobody listening / nothing playing) before the
-    # bot leaves the voice channel. 0 disables the auto-disconnect.
-    AUTO_DISCONNECT_SECONDS: int = _get_int("AUTO_DISCONNECT_SECONDS", 300)
-
-    # ----------------------------------------------------------- Database
-    # DB_TYPE: "mysql" (MariaDB/MySQL - used by the all-in-one Docker image)
-    # or "sqlite" (single file - easy local runs without any database server).
-    DB_TYPE: str = _get("DB_TYPE", "mysql").lower()
-    DB_HOST: str = _get("DB_HOST", "127.0.0.1")
-    DB_PORT: int = _get_int("DB_PORT", 3306)
-    DB_USER: str = _get("DB_USER", "musicbot")
-    DB_PASSWORD: str = _get("DB_PASSWORD", "musicbotpass")
-    DB_NAME: str = _get("DB_NAME", "musicbot")
-    SQLITE_PATH: str = _get("SQLITE_PATH", "musicbot.sqlite3")
-
-    # ------------------------------------------------------------ Playback
-    DEFAULT_VOLUME: int = _get_int("DEFAULT_VOLUME", 60)
-    MAX_VOLUME: int = _get_int("MAX_VOLUME", 150)
-
-    # ------------------------------------------------- Development/testing
-    # Provide a guild ID to sync slash commands instantly to that server
-    # (global slash sync can take up to one hour to propagate).
-    TEST_GUILD_ID: "int | None" = (
-        _get_int("TEST_GUILD_ID", 0) or None
-    )
-    # Internal flag used by Scripts/auto_test.py to run the end-to-end test.
-    AUTOTEST: bool = _get_bool("AUTOTEST", False)
-    # Optional: name of the voice channel the auto-test should join.
-    TEST_VOICE_CHANNEL: str = _get("TEST_VOICE_CHANNEL", "")
-
-    @classmethod
-    def validate(cls) -> "list[str]":
-        """Return a list of configuration problems (empty list = OK)."""
-        problems: "list[str]" = []
-        if not cls.DISCORD_TOKEN:
-            problems.append(
-                "DISCORD_TOKEN is missing. Set it as an environment variable "
-                "or inside a .env file (see .env.example)."
-            )
-        if cls.DB_TYPE not in ("mysql", "sqlite"):
-            problems.append(
-                f"DB_TYPE must be 'mysql' or 'sqlite' (got: {cls.DB_TYPE})."
-            )
-        if cls.AUTO_DISCONNECT_SECONDS < 0:
-            problems.append("AUTO_DISCONNECT_SECONDS must be >= 0.")
-        if not 1 <= cls.DEFAULT_VOLUME <= cls.MAX_VOLUME:
-            problems.append(
-                f"DEFAULT_VOLUME must be between 1 and {cls.MAX_VOLUME}."
-            )
-        return problems
-ZEOF_CONFIG_PY
-COPY <<'ZEOF_DATABASE_PY' /app/database.py
-"""
-Async database layer with two interchangeable backends:
-
-  - ``mysql``  -> MariaDB/MySQL through aiomysql (used by the all-in-one Docker image)
-  - ``sqlite`` -> a single file through aiosqlite (zero-setup local runs)
-
-Both backends expose exactly the same interface, and the schema is created
-automatically on startup (no manual SQL import needed).
-"""
-
-from __future__ import annotations
-
-import json
-import logging
-from typing import Any, Optional
-
-import aiomysql
-import aiosqlite
-
-from config import Config
-
-log = logging.getLogger("musicbot.database")
-
-SCHEMA_SQL = {
-    "servers": """
-        CREATE TABLE IF NOT EXISTS servers (
-            server_id BIGINT PRIMARY KEY,
-            volume    INT NOT NULL DEFAULT 60,
-            settings  TEXT
-        )
-    """,
-    "queue_tracks": """
-        CREATE TABLE IF NOT EXISTS queue_tracks (
-            id           {PK},
-            server_id    BIGINT NOT NULL,
-            position     INT NOT NULL,
-            track_data   TEXT NOT NULL,
-            requester_id BIGINT,
-            INDEX idx_queue_server (server_id, position)
-        )
-    """.replace("{PK}", "BIGINT AUTO_INCREMENT PRIMARY KEY"),
-    "playlists": """
-        CREATE TABLE IF NOT EXISTS playlists (
-            id         {PK},
-            server_id  BIGINT NOT NULL,
-            name       VARCHAR(100) NOT NULL,
-            creator_id BIGINT,
-            UNIQUE KEY uq_playlist (server_id, name)
-        )
-    """.replace("{PK}", "BIGINT AUTO_INCREMENT PRIMARY KEY"),
-    "playlist_tracks": """
-        CREATE TABLE IF NOT EXISTS playlist_tracks (
-            id           {PK},
-            playlist_id  BIGINT NOT NULL,
-            position     INT NOT NULL,
-            track_data   TEXT NOT NULL,
-            INDEX idx_ptracks (playlist_id, position)
-        )
-    """.replace("{PK}", "BIGINT AUTO_INCREMENT PRIMARY KEY"),
-}
-
-# SQLite does not support the MySQL "INDEX ... ()" inline syntax.
-SCHEMA_SQL_SQLITE = {
-    "servers": """
-        CREATE TABLE IF NOT EXISTS servers (
-            server_id INTEGER PRIMARY KEY,
-            volume    INTEGER NOT NULL DEFAULT 60,
-            settings  TEXT
-        )
-    """,
-    "queue_tracks": """
-        CREATE TABLE IF NOT EXISTS queue_tracks (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            server_id    INTEGER NOT NULL,
-            position     INTEGER NOT NULL,
-            track_data   TEXT NOT NULL,
-            requester_id INTEGER
-        )
-    """,
-    "playlists": """
-        CREATE TABLE IF NOT EXISTS playlists (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            server_id  INTEGER NOT NULL,
-            name       TEXT NOT NULL,
-            creator_id INTEGER,
-            UNIQUE (server_id, name)
-        )
-    """,
-    "playlist_tracks": """
-        CREATE TABLE IF NOT EXISTS playlist_tracks (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            playlist_id  INTEGER NOT NULL,
-            position     INTEGER NOT NULL,
-            track_data   TEXT NOT NULL
-        )
-    """,
-}
-
-
-class Database:
-    """Unified async database interface (MySQL or SQLite)."""
-
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-        self._pool: "Optional[aiomysql.Pool]" = None
-        self._sqlite: "Optional[aiosqlite.Connection]" = None
-
-    # ------------------------------------------------------------- setup
-    async def init(self) -> None:
-        if self.cfg.DB_TYPE == "mysql":
-            self._pool = await aiomysql.create_pool(
-                host=self.cfg.DB_HOST,
-                port=self.cfg.DB_PORT,
-                user=self.cfg.DB_USER,
-                password=self.cfg.DB_PASSWORD,
-                db=self.cfg.DB_NAME,
-                autocommit=True,
-                minsize=1,
-                maxsize=5,
-                loop=None,
-            )
-            log.info("Connected to MariaDB at %s:%s/%s",
-                     self.cfg.DB_HOST, self.cfg.DB_PORT, self.cfg.DB_NAME)
-            async with self._pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    for stmt in SCHEMA_SQL.values():
-                        await cur.execute(stmt)
-        else:
-            self._sqlite = await aiosqlite.connect(self.cfg.SQLITE_PATH)
-            self._sqlite.row_factory = aiosqlite.Row
-            log.info("Connected to SQLite database at %s", self.cfg.SQLITE_PATH)
-            for stmt in SCHEMA_SQL_SQLITE.values():
-                await self._sqlite.execute(stmt)
-            await self._sqlite.commit()
-        log.info("Database schema verified (all tables present).")
-
-    async def close(self) -> None:
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-        if self._sqlite is not None:
-            await self._sqlite.close()
-
-    # --------------------------------------------------------- internals
-    async def _fetchall(self, query: str, args: tuple = ()) -> "list[tuple]":
-        if self._pool is not None:
-            async with self._pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query, args)
-                    return list(await cur.fetchall())
-        async with self._sqlite.execute(query, args) as cur:
-            return list(await cur.fetchall())
-
-    async def _execute(self, query: str, args: tuple = ()) -> None:
-        if self._pool is not None:
-            async with self._pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query, args)
-        else:
-            await self._sqlite.execute(query, args)
-            await self._sqlite.commit()
-
-    # -------------------------------------------------------- servers
-    async def upsert_server(self, server_id: int) -> None:
-        await self._execute(
-            "INSERT IGNORE INTO servers (server_id, volume) VALUES (%s, %s)"
-            if self._pool is not None else
-            "INSERT OR IGNORE INTO servers (server_id, volume) VALUES (?, ?)",
-            (server_id, self.cfg.DEFAULT_VOLUME),
-        )
-
-    async def get_volume(self, server_id: int) -> Optional[int]:
-        rows = await self._fetchall(
-            "SELECT volume FROM servers WHERE server_id = %s"
-            if self._pool is not None else
-            "SELECT volume FROM servers WHERE server_id = ?",
-            (server_id,),
-        )
-        return int(rows[0][0]) if rows else None
-
-    async def set_volume(self, server_id: int, volume: int) -> None:
-        await self.upsert_server(server_id)
-        await self._execute(
-            "UPDATE servers SET volume = %s WHERE server_id = %s"
-            if self._pool is not None else
-            "UPDATE servers SET volume = ? WHERE server_id = ?",
-            (volume, server_id),
-        )
-
-    # ---------------------------------------------------------- queue
-    async def replace_queue(self, server_id: int, tracks: "list[dict]") -> None:
-        """Persist the in-memory queue (source of truth = memory)."""
-        await self._execute(
-            "DELETE FROM queue_tracks WHERE server_id = %s"
-            if self._pool is not None else
-            "DELETE FROM queue_tracks WHERE server_id = ?",
-            (server_id,),
-        )
-        for position, item in enumerate(tracks):
-            await self._execute(
-                "INSERT INTO queue_tracks (server_id, position, track_data, requester_id) "
-                "VALUES (%s, %s, %s, %s)"
-                if self._pool is not None else
-                "INSERT INTO queue_tracks (server_id, position, track_data, requester_id) "
-                "VALUES (?, ?, ?, ?)",
-                (server_id, position, json.dumps(item["data"]), item["requester"]),
-            )
-
-    async def get_queue(self, server_id: int) -> "list[dict]":
-        rows = await self._fetchall(
-            "SELECT track_data, requester_id FROM queue_tracks WHERE server_id = %s "
-            "ORDER BY position ASC"
-            if self._pool is not None else
-            "SELECT track_data, requester_id FROM queue_tracks WHERE server_id = ? "
-            "ORDER BY position ASC",
-            (server_id,),
-        )
-        result: "list[dict]" = []
-        for row in rows:
-            try:
-                result.append({
-                    "data": json.loads(row[0]),
-                    "requester": row[1],
-                })
-            except (json.JSONDecodeError, TypeError):
-                continue
-        return result
-
-    async def queue_count(self, server_id: int) -> int:
-        rows = await self._fetchall(
-            "SELECT COUNT(*) FROM queue_tracks WHERE server_id = %s"
-            if self._pool is not None else
-            "SELECT COUNT(*) FROM queue_tracks WHERE server_id = ?",
-            (server_id,),
-        )
-        return int(rows[0][0]) if rows else 0
-
-    # ------------------------------------------------------ playlists
-    async def playlist_create(self, server_id: int, name: str,
-                              creator_id: int) -> bool:
-        """Returns False if a playlist with this name already exists."""
-        existing = await self._fetchall(
-            "SELECT id FROM playlists WHERE server_id = %s AND name = %s"
-            if self._pool is not None else
-            "SELECT id FROM playlists WHERE server_id = ? AND name = ?",
-            (server_id, name),
-        )
-        if existing:
-            return False
-        await self._execute(
-            "INSERT INTO playlists (server_id, name, creator_id) VALUES (%s, %s, %s)"
-            if self._pool is not None else
-            "INSERT INTO playlists (server_id, name, creator_id) VALUES (?, ?, ?)",
-            (server_id, name, creator_id),
-        )
-        return True
-
-    async def playlist_delete(self, server_id: int, name: str) -> bool:
-        rows = await self._fetchall(
-            "SELECT id FROM playlists WHERE server_id = %s AND name = %s"
-            if self._pool is not None else
-            "SELECT id FROM playlists WHERE server_id = ? AND name = ?",
-            (server_id, name),
-        )
-        if not rows:
-            return False
-        playlist_id = int(rows[0][0])
-        await self._execute(
-            "DELETE FROM playlist_tracks WHERE playlist_id = %s"
-            if self._pool is not None else
-            "DELETE FROM playlist_tracks WHERE playlist_id = ?",
-            (playlist_id,),
-        )
-        await self._execute(
-            "DELETE FROM playlists WHERE id = %s"
-            if self._pool is not None else
-            "DELETE FROM playlists WHERE id = ?",
-            (playlist_id,),
-        )
-        return True
-
-    async def playlist_list(self, server_id: int) -> "list[tuple[int, str, int]]":
-        rows = await self._fetchall(
-            "SELECT p.id, p.name, COUNT(t.id) FROM playlists p "
-            "LEFT JOIN playlist_tracks t ON t.playlist_id = p.id "
-            "WHERE p.server_id = %s GROUP BY p.id, p.name ORDER BY p.name"
-            if self._pool is not None else
-            "SELECT p.id, p.name, COUNT(t.id) FROM playlists p "
-            "LEFT JOIN playlist_tracks t ON t.playlist_id = p.id "
-            "WHERE p.server_id = ? GROUP BY p.id, p.name ORDER BY p.name",
-            (server_id,),
-        )
-        return [(int(r[0]), str(r[1]), int(r[2])) for r in rows]
-
-    async def playlist_get(self, server_id: int, name: str) -> "Optional[dict]":
-        rows = await self._fetchall(
-            "SELECT id FROM playlists WHERE server_id = %s AND name = %s"
-            if self._pool is not None else
-            "SELECT id FROM playlists WHERE server_id = ? AND name = ?",
-            (server_id, name),
-        )
-        if not rows:
-            return None
-        return {"id": int(rows[0][0]), "name": name}
-
-    async def playlist_add_tracks(self, playlist_id: int,
-                                  tracks: "list[dict]") -> int:
-        rows = await self._fetchall(
-            "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = %s"
-            if self._pool is not None else
-            "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?",
-            (playlist_id,),
-        )
-        start = int(rows[0][0]) + 1 if rows else 0
-        for offset, item in enumerate(tracks):
-            await self._execute(
-                "INSERT INTO playlist_tracks (playlist_id, position, track_data) "
-                "VALUES (%s, %s, %s)"
-                if self._pool is not None else
-                "INSERT INTO playlist_tracks (playlist_id, position, track_data) "
-                "VALUES (?, ?, ?)",
-                (playlist_id, start + offset, json.dumps(item["data"])),
-            )
-        return len(tracks)
-
-    async def playlist_get_tracks(self, playlist_id: int) -> "list[dict]":
-        rows = await self._fetchall(
-            "SELECT track_data FROM playlist_tracks WHERE playlist_id = %s "
-            "ORDER BY position ASC"
-            if self._pool is not None else
-            "SELECT track_data FROM playlist_tracks WHERE playlist_id = ? "
-            "ORDER BY position ASC",
-            (playlist_id,),
-        )
-        result: "list[dict]" = []
-        for row in rows:
-            try:
-                result.append({"data": json.loads(row[0]), "requester": None})
-            except (json.JSONDecodeError, TypeError):
-                continue
-        return result
-ZEOF_DATABASE_PY
-COPY <<'ZEOF_MAIN_PY' /app/main.py
-#!/usr/bin/env python3
-"""
-Music Discord Bot - v2 (fully upgraded).
-
-Stack: discord.py 2.7 + wavelink 3.5 + Lavalink v4 (+ youtube-source & LavaSrc
-plugins) + MariaDB/SQLite.
-
-Run:  python main.py          (configure via .env or environment variables)
-"""
-
-from __future__ import annotations
-
-import asyncio
-import logging
 import sys
 
-import discord
-import wavelink
-from discord.ext import commands
+import yaml
 
-from config import Config
+# ── الثوابت الثابتة (لا تتغير) ──────────────────────────────────────────────
+LAVALINK_VERSION = "4.2.2"
+YOUTUBE_PLUGIN = "dev.lavalink.youtube:youtube-plugin:1.18.2"
+LAVASRC_PLUGIN = "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
+LAVASEARCH_PLUGIN = "com.github.topi314.lavasearch:lavasearch-plugin:1.0.0"
+MAVEN_REPO = "https://maven.lavalink.dev/releases"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
+# ── القيم من البيئة (مع افتراضيات ثابتة) ────────────────────────────────────
+PORT = int(os.getenv("LAVALINK_PORT", "2008"))
+PASSWORD = os.getenv("LAVALINK_PASSWORD", "ELMINYAWE")
+REFRESH_TOKEN = os.getenv(
+    "YT_REFRESH_TOKEN",
+    "1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw",
 )
-logging.getLogger("wavelink").setLevel(logging.INFO)
-
-log = logging.getLogger("musicbot")
-
-
-class MusicBot(commands.Bot):
-    def __init__(self, cfg: Config, enable_prefix_commands: bool = True):
-        self.cfg = cfg
-        self.enable_prefix_commands = enable_prefix_commands
-
-        intents = discord.Intents.default()
-        intents.voice_states = True
-        if enable_prefix_commands:
-            # Privileged intent - must be enabled in the Developer Portal.
-            # If it is not, we retry without it (slash-only mode).
-            intents.message_content = True
-
-        super().__init__(
-            command_prefix=cfg.PREFIX if enable_prefix_commands else commands.when_mentioned,
-            intents=intents,
-            help_command=None,
-        )
-        self.music = None  # type: ignore[assignment]
-        self.db = None  # type: ignore[assignment]
-        self.node_watchdog_task: "asyncio.Task | None" = None
-        # Songs already rescued via SoundCloud (prevents rescue loops).
-        self._rescued: set = set()
-
-    # ------------------------------------------------------------ startup
-    async def setup_hook(self) -> None:
-        # 1. Database ------------------------------------------------------
-        from database import Database
-
-        self.db = Database(self.cfg)
-        await self.db.init()
-
-        # 2. Lavalink ------------------------------------------------------
-        timeout = (self.cfg.AUTO_DISCONNECT_SECONDS
-                   if self.cfg.AUTO_DISCONNECT_SECONDS > 0 else None)
-        node = wavelink.Node(
-            identifier="MAIN",
-            uri=f"http://{self.cfg.LAVALINK_HOST}:{self.cfg.LAVALINK_PORT}",
-            password=self.cfg.LAVALINK_PASSWORD,
-            inactive_player_timeout=timeout,
-        )
-        try:
-            await wavelink.Pool.connect(client=self, nodes=[node])
-            log.info("Connected to Lavalink node at %s:%s",
-                     self.cfg.LAVALINK_HOST, self.cfg.LAVALINK_PORT)
-        except Exception as error:  # noqa: BLE001
-            # Do not kill the whole bot: the watchdog task below keeps
-            # retrying in the background until Lavalink is reachable.
-            log.error("Initial Lavalink connection failed: %s - the node "
-                      "watchdog will keep retrying.", error)
-        self.node_watchdog_task = asyncio.create_task(self._node_watchdog())
-
-        # 3. Cogs & persistent views ---------------------------------------
-        from music import MusicCog
-        from views import NowPlayingView
-
-        await self.add_cog(MusicCog(self))
-        self.music = self.get_cog("MusicCog")
-        self.add_view(NowPlayingView(self))
-
-        # 4. Slash command sync -------------------------------------------
-        if self.cfg.TEST_GUILD_ID is not None:
-            guild = discord.Object(id=self.cfg.TEST_GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            log.info("Slash commands synced instantly to guild %s",
-                     self.cfg.TEST_GUILD_ID)
-        else:
-            synced = await self.tree.sync()
-            log.info("Synced %s global slash commands (may take up to 1h "
-                     "to appear everywhere).", len(synced))
-
-    # ------------------------------------------------------------ events
-    async def on_ready(self) -> None:
-        await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening,
-                                      name=self.cfg.ACTIVITY))
-        log.info("=" * 60)
-        log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", "?"))
-        log.info("Prefix commands: %s | Slash commands: ready",
-                 "ON" if self.enable_prefix_commands else "OFF (slash-only)")
-        log.info("Connected to %s guild(s): %s",
-                 len(self.guilds),
-                 ", ".join(f"{g.name}({g.id})" for g in self.guilds) or "none")
-        log.info("=" * 60)
-
-        if self.cfg.AUTOTEST:
-            asyncio.create_task(self._run_autotest())
-
-    async def on_command_error(self, ctx: commands.Context, error: Exception) -> None:
-        if isinstance(error, commands.CommandNotFound):
-            return
-        if isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"Missing argument: `{error.param.name}`. "
-                           f"Try `{self.cfg.PREFIX}help`.")
-            return
-        log.error("Command error in %s: %s", ctx.command, error, exc_info=error)
-
-    async def _node_watchdog(self) -> None:
-        """Keep at least one Lavalink node connected at all times.
-
-        Wavelink already retries websocket connections on its own (with
-        backoff) and requests session resuming - this watchdog is the last
-        line of defence: if no node reports CONNECTED for two consecutive
-        checks (~60s), it tears down the dead node objects and registers a
-        fresh one. This is what prevents the classic "bot stays in the voice
-        channel but goes silent forever" failure mode.
-        """
-        await self.wait_until_ready()
-        failure_streak = 0
-        while not self.is_closed():
-            await asyncio.sleep(30)
-            try:
-                nodes = dict(wavelink.Pool.nodes)
-                connected = [n for n in nodes.values()
-                             if n.status == wavelink.NodeStatus.CONNECTED]
-                if connected:
-                    failure_streak = 0
-                    continue
-                failure_streak += 1
-                if failure_streak < 2:
-                    # Give wavelink's internal retry loop (backoff up to 30s)
-                    # a chance to reconnect by itself before we intervene.
-                    continue
-                log.warning("Node watchdog: no connected Lavalink node - "
-                            "rebuilding it.")
-                failure_streak = 0
-                pool_nodes = getattr(wavelink.Pool, "_Pool__nodes", {})
-                for identifier in list(nodes):
-                    try:
-                        pool_nodes.pop(identifier, None)
-                    except Exception:  # noqa: BLE001
-                        pass
-                timeout = (self.cfg.AUTO_DISCONNECT_SECONDS
-                           if self.cfg.AUTO_DISCONNECT_SECONDS > 0 else None)
-                node = wavelink.Node(
-                    identifier=f"MAIN-{int(asyncio.get_running_loop().time())}",
-                    uri=f"http://{self.cfg.LAVALINK_HOST}:"
-                        f"{self.cfg.LAVALINK_PORT}",
-                    password=self.cfg.LAVALINK_PASSWORD,
-                    inactive_player_timeout=timeout,
-                )
-                await wavelink.Pool.connect(client=self, nodes=[node])
-                log.info("Node watchdog: reconnected to Lavalink.")
-            except asyncio.CancelledError:  # noqa: UP037
-                raise
-            except Exception as error:  # noqa: BLE001
-                log.error("Node watchdog: reconnect failed: %s", error)
-
-    async def _run_autotest(self) -> None:
-        """Optional end-to-end test (AUTOTEST=1) - see Scripts/auto_test.py."""
-        from Scripts.auto_test import run_auto_test
-
-        try:
-            await run_auto_test(self)
-        except Exception:
-            log.exception("Auto test crashed")
+CLIENTS = [c.strip() for c in os.getenv("YT_CLIENTS", "MUSIC,TV,TVHTML5_SIMPLY,ANDROID_VR").split(",") if c.strip()]
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "b9a4b5775f1847a2b072573589b530f7")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "682ef411fa5942d28bfe6c409e90f202")
+OUTPUT = os.getenv("LAVALINK_CONFIG", "/opt/lavalink/application.yml")
 
 
-async def detect_message_content_intent(token: str) -> bool:
-    """Probe the Discord gateway to see if the Message Content intent works.
+def build_config() -> dict:
+    return {
+        "lavalink": {
+            "plugins": [
+                {"dependency": YOUTUBE_PLUGIN, "repository": MAVEN_REPO},
+                {"dependency": LAVASRC_PLUGIN, "repository": MAVEN_REPO},
+                {"dependency": LAVASEARCH_PLUGIN, "repository": MAVEN_REPO},
+            ],
+            "server": {
+                "password": PASSWORD,
+                "sources": {
+                    "youtube": False,        # المصدر المدمج معطّل — البرنامج الإضافي يتولى يوتيوب
+                    "bandcamp": True,
+                    "soundcloud": True,
+                    "twitch": True,
+                    "vimeo": True,
+                    "http": True,            # مهم: يسمح ببث الروابط المباشرة (مسار الإصلاح)
+                    "local": False,
+                    "nico": True,
+                },
+                "youtubeSearchEnabled": True,
+                "soundcloudSearchEnabled": True,
+                "youtubePlaylistLoadLimit": 6,
+                "bufferDurationMs": 400,
+                "frameBufferDurationMs": 5000,
+                "opusEncodingQuality": 5,
+                "resamplingQuality": "HIGH",
+                "trackStuckThresholdMs": 10000,
+                "useSeekGhosting": True,
+                "playerUpdateInterval": 5,
+                "readTimeout": 60000,
+                "requestTimeout": 60000,
+                "gcWarnings": True,
+                "filters": {
+                    "volume": True,
+                    "equalizer": True,
+                    "karaoke": True,
+                    "timescale": True,
+                    "tremolo": True,
+                    "vibrato": True,
+                    "rotation": True,
+                    "distortion": True,
+                    "channelMix": True,
+                    "lowPass": True,
+                },
+            },
+        },
+        "logging": {
+            "level": {
+                "root": "INFO",
+                "lavalink": "INFO",
+                "dev.lavalink.youtube.http.YoutubeOauth2Handler": "INFO",
+            },
+            "logback": {
+                "rollingPolicy": {
+                    "maxFileSize": "100MB",
+                    "maxHistory": 7,
+                }
+            },
+            "request": {
+                "enabled": False,
+            },
+        },
+        "metrics": {
+            "prometheus": {
+                "enabled": False,
+                "endpoint": "/metrics",
+            }
+        },
+        "plugins": {
+            "youtube": {
+                "enabled": True,
+                "allowSearch": True,
+                "allowDirectVideoIds": True,
+                "allowDirectPlaylistIds": True,
+                "clients": CLIENTS,
+                "oauth": {
+                    "enabled": True,
+                    "skipInitialization": True,   # تخطّى تدفّق الجهاز — استخدم الرمز المحدّث مباشرة
+                    "refreshToken": REFRESH_TOKEN,
+                },
+            },
+            "lavasrc": {
+                "providers": [
+                    'ytsearch:"%ISRC%"',
+                    "ytsearch:%QUERY%",
+                ],
+                "sources": {
+                    "spotify": True,
+                    "youtube": True,
+                    "applemusic": False,
+                    "deezer": False,
+                    "yandexmusic": False,
+                    "flowerytts": False,
+                },
+                "spotify": {
+                    "clientId": SPOTIFY_CLIENT_ID,
+                    "clientSecret": SPOTIFY_CLIENT_SECRET,
+                    "countryCode": "US",
+                    "albumLoadLimit": 10,
+                    "playlistLoadLimit": 10,
+                    "resolveArtistsInSearch": True,
+                    "localFiles": False,
+                },
+            },
+            "lavasearch": {
+                "sources": ["spotify", "youtube"],
+            },
+        },
+        "server": {
+            "address": "0.0.0.0",
+            "port": PORT,
+            "http2": {"enabled": False},
+        },
+    }
 
-    Returns True if the bot may use prefix commands, False if the privileged
-    intent is disabled in the Developer Portal (slash-only mode then).
-    Raises discord.errors.LoginFailure for an invalid token.
-    """
-    intents = discord.Intents.default()
-    intents.message_content = True
-    client = discord.Client(intents=intents)
-    holder: dict = {}
 
-    async def runner():
-        try:
-            await client.start(token)
-        except Exception as error:  # noqa: BLE001 - probe collects everything
-            holder["error"] = error
-
-    task = asyncio.create_task(runner())
-    ready = asyncio.create_task(client.wait_until_ready())
-    done, _ = await asyncio.wait({task, ready}, timeout=25.0,
-                                 return_when=asyncio.FIRST_COMPLETED)
-
-    error = holder.get("error")
-    if isinstance(error, discord.errors.LoginFailure):
-        raise error
-
-    connected = ready in done and not client.is_closed()
-    try:
-        await client.close()
-    except Exception:  # noqa: BLE001
-        pass
-    task.cancel()
-    return connected
+def validate(cfg: dict):
+    """تحقق صارم من القيم الحرجة قبل كتابة الملف."""
+    assert cfg["lavalink"]["server"]["password"] == PASSWORD, "password mismatch"
+    assert cfg["server"]["port"] == PORT, "port mismatch"
+    assert cfg["lavalink"]["server"]["sources"]["youtube"] is False, "builtin youtube must be off"
+    assert cfg["lavalink"]["server"]["sources"]["http"] is True, "http source must stay on"
+    assert cfg["plugins"]["youtube"]["oauth"]["refreshToken"] == REFRESH_TOKEN, "refresh token mismatch"
+    assert cfg["plugins"]["youtube"]["oauth"]["skipInitialization"] is True, "skipInitialization must be true"
+    assert cfg["plugins"]["youtube"]["clients"], "clients list empty"
+    assert cfg["plugins"]["lavasrc"]["spotify"]["clientId"] == SPOTIFY_CLIENT_ID, "spotify id mismatch"
+    assert cfg["plugins"]["lavasrc"]["spotify"]["clientSecret"] == SPOTIFY_CLIENT_SECRET, "spotify secret mismatch"
+    assert YOUTUBE_PLUGIN in [p["dependency"] for p in cfg["lavalink"]["plugins"]], "youtube plugin missing"
 
 
-def run() -> int:
-    problems = Config.validate()
-    if problems:
-        print("Configuration problems found:", file=sys.stderr)
-        for problem in problems:
-            print(f"  - {problem}", file=sys.stderr)
-        return 2
-
-    async def amain() -> int:
-        try:
-            prefix_ok = await detect_message_content_intent(Config.DISCORD_TOKEN)
-        except discord.errors.LoginFailure:
-            print("ERROR: The Discord token is invalid or was reset. Get a "
-                  "fresh token from the Developer Portal.", file=sys.stderr)
-            return 4
-        except asyncio.TimeoutError:
-            print("WARNING: Could not reach Discord to probe intents - "
-                  "assuming prefix commands are allowed.", file=sys.stderr)
-            prefix_ok = True
-
-        if not prefix_ok:
-            print("MESSAGE CONTENT INTENT is not enabled for this bot - "
-                  "running in SLASH-ONLY mode.", file=sys.stderr)
-            print("To enable prefix commands: Developer Portal -> your app -> "
-                  "Bot -> Privileged Gateway Intents -> MESSAGE CONTENT INTENT.",
-                  file=sys.stderr)
-
-        bot = MusicBot(Config, enable_prefix_commands=prefix_ok)
-        try:
-            await bot.start(Config.DISCORD_TOKEN)
-        except discord.errors.PrivilegedIntentsRequired:
-            print("ERROR: Privileged intents are missing. Enable "
-                  "'MESSAGE CONTENT INTENT' and 'SERVER MEMBERS INTENT' at "
-                  "https://discord.com/developers/applications -> Bot.",
-                  file=sys.stderr)
-            return 3
-        except KeyboardInterrupt:
-            pass
-        return 0
-
-    try:
-        return asyncio.run(amain())
-    except KeyboardInterrupt:
-        return 0
+def main():
+    cfg = build_config()
+    validate(cfg)
+    os.makedirs(os.path.dirname(OUTPUT) or ".", exist_ok=True)
+    with open(OUTPUT, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    # إعادة القراءة والتحقق النهائي
+    with open(OUTPUT, "r", encoding="utf-8") as f:
+        loaded = yaml.safe_load(f)
+    validate(loaded)
+    print(f"✅ Lavalink config written & validated: {OUTPUT}")
+    print(f"   clients: {CLIENTS}")
+    print(f"   port: {PORT} | password: {'*' * len(PASSWORD)}")
+    print(f"   oauth refreshToken: {REFRESH_TOKEN[:12]}... ({len(REFRESH_TOKEN)} chars)")
 
 
 if __name__ == "__main__":
-    sys.exit(run())
-ZEOF_MAIN_PY
-COPY <<'ZEOF_MUSIC_PY' /app/music.py
-"""
-The MusicCog: every music command (prefix `?play` AND slash `/play` in one
-implementation via hybrid commands), plus playback event handling.
-"""
+    main()
+GENCFG_EOF
 
-from __future__ import annotations
+# ── كود البوت الكامل ────────────────────────────────────────────────────────
+RUN cat > /opt/bot/music.py <<'MUSICPY_EOF'
+# -*- coding: utf-8 -*-
+# ═══════════════════════════════════════════════════════════════════════════
+#  elminyawe bot — بوت موسيقى ديسكورد (Lavalink + وضع احتياطي yt-dlp/ffmpeg)
+#  ─────────────────────────────────────────────────────────────────────────
+#  • أمر play يعرض قائمة نتائج مرقّمة وينتظر اختيار المستخدم رقم الأغنية
+#  • لا إضافة تلقائية لقائمة الانتظار ولا تشغيل تلقائي (AutoPlay مُعطّل)
+#  • عند فشل تحميل يوتيوب في Lavalink: محاولة إصلاح تلقائية عبر yt-dlp
+#    (يستخرج رابط الصوت المباشر ويبثّه عبر مصدر HTTP في Lavalink)
+#  • إذا تعذّر الوصول لـ Lavalink نهائياً: وضع احتياطي كامل بـ yt-dlp + ffmpeg
+#  • قاعدة بيانات MariaDB: سجل التاريخ + إعدادات لكل سيرفر (اختياري - يتحمل
+#    عدم توفرها بدون توقف)
+# ═══════════════════════════════════════════════════════════════════════════
 
 import asyncio
 import logging
+import os
+import random
 import re
+import sys
 import time
-from typing import Optional
 
 import discord
 import wavelink
-from discord import app_commands
+import yt_dlp
+import pymysql
 from discord.ext import commands
 
-from config import Config
-from database import Database
-from views import NowPlayingView, SearchView, build_now_playing_embed, format_time
+# ─────────────────────────────────────────────
+#  الإعدادات من متغيرات البيئة
+# ─────────────────────────────────────────────
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+PREFIX = os.getenv("DISCORD_PREFIX", "!").strip() or "!"
 
-log = logging.getLogger("musicbot.music")
+LAVALINK_HOST = os.getenv("LAVALINK_HOST", "127.0.0.1")
+LAVALINK_PORT = int(os.getenv("LAVALINK_PORT", "2008"))
+LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "ELMINYAWE")
 
-URL_REGEX = re.compile(r"https?://\S+", re.IGNORECASE)
+MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
+MYSQL_ROOT_PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "musicbot")
 
-# Maps user-facing source names to Lavalink search prefixes.
-SOURCE_MAP = {
-    "yt": wavelink.TrackSource.YouTube,
-    "youtube": wavelink.TrackSource.YouTube,
-    "ytm": wavelink.TrackSource.YouTubeMusic,
-    "music": wavelink.TrackSource.YouTubeMusic,
-    "sc": wavelink.TrackSource.SoundCloud,
-    "soundcloud": wavelink.TrackSource.SoundCloud,
-    "sp": "spsearch",          # LavaSrc (Spotify)
-    "spotify": "spsearch",     # LavaSrc (Spotify)
-    "dz": "dzsearch",          # LavaSrc (Deezer)
-    "deezer": "dzsearch",      # LavaSrc (Deezer)
+IDLE_DISCONNECT_SEC = int(os.getenv("IDLE_DISCONNECT_SEC", "300"))
+
+TEST_MODE = os.getenv("TEST_MODE") == "1"
+TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0") or 0)
+TEST_CHANNEL_ID = int(os.getenv("TEST_CHANNEL_ID", "0") or 0)
+TEST_RESULTS_FILE = os.getenv("TEST_RESULTS_FILE", "test_results.txt")
+
+# وضع المحرك يُحدَّد عند الإقلاع: "lavalink" أو "ffmpeg"
+ENGINE = "lavalink"
+
+log = logging.getLogger("elminyawe")
+
+# كلمات الأوامر التي تُقبل بدون بادئة (مثال: play ياه تامر عاشور)
+BARE_OK = {
+    "play", "p", "queue", "q", "nowplaying", "np", "skip", "s", "pause",
+    "resume", "stop", "volume", "vol", "v", "loop", "shuffle", "skipto",
+    "remove", "seek", "join", "leave", "dc", "247", "history", "ping", "help",
 }
 
+CANCEL_WORDS = {"الغاء", "إلغاء", "الإلغاء", "cancel", "الغاء."}
 
+URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+
+# ─────────────────────────────────────────────
+#  أدوات مساعدة عامة
+# ─────────────────────────────────────────────
+
+def fmt_time(ms: int) -> str:
+    """تحويل ميلي ثانية إلى صيغة mm:ss أو hh:mm:ss."""
+    try:
+        ms = int(ms)
+    except (TypeError, ValueError):
+        return "0:00"
+    if ms < 0:
+        return "0:00"
+    total = ms // 1000
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def progress_bar(pos: int, dur: int, size: int = 14) -> str:
+    """شريط تقدم نصي: ▰▰▰▱▱▱."""
+    try:
+        pos = int(pos)
+        dur = int(dur)
+    except (TypeError, ValueError):
+        dur, pos = 0, 0
+    if dur <= 0:
+        return "▱" * size
+    frac = min(max(pos / dur, 0.0), 1.0)
+    filled = int(round(frac * size))
+    return "▰" * filled + "▱" * (size - filled)
+
+
+def is_url(text: str) -> bool:
+    return bool(URL_RE.match((text or "").strip()))
+
+
+def is_spotify(text: str) -> bool:
+    t = (text or "").lower()
+    return "open.spotify.com" in t or "spotify:" in t
+
+
+# ─────────────────────────────────────────────
+#  yt-dlp : استخراج روابط الصوت + البحث
+# ─────────────────────────────────────────────
+_YT_CLIENTS = os.getenv("YTDLP_CLIENTS", "").strip()
+_EXTRACTOR_ARGS = {}
+if _YT_CLIENTS:
+    _EXTRACTOR_ARGS["youtube"] = {
+        "player_client": [c.strip() for c in _YT_CLIENTS.split(",") if c.strip()]
+    }
+
+# كوكيز يوتيوب اختيارية (لتجاوز فحص "لست روبوتاً" على IPs مراكز البيانات)
+# YOUTUBE_COOKIES: محتوى ملف cookies.txt كامل داخل متغير البيئة
+# YOUTUBE_COOKIES_FILE: أو مسار ملف cookies.txt جاهز
+_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
+_cookies_env = os.getenv("YOUTUBE_COOKIES", "").strip()
+if _cookies_env and not _COOKIES_FILE:
+    import tempfile
+    _fd, _tmp = tempfile.mkstemp(prefix="elminyawe_cookies_", suffix=".txt")
+    with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+        _f.write(_cookies_env.replace("\\n", "\n") + "\n")
+    _COOKIES_FILE = _tmp
+    log.info("🍪 تم تجهيز ملف كوكيز يوتيوب من متغير YOUTUBE_COOKIES")
+elif _COOKIES_FILE:
+    log.info(f"🍪 استخدام ملف الكوكيز: {_COOKIES_FILE}")
+
+YDL_BASE = {
+    "quiet": True,
+    "no_warnings": True,
+    "skip_download": True,
+    "noplaylist": True,
+    "socket_timeout": 20,
+    "retries": 3,
+    "extractor_args": _EXTRACTOR_ARGS,
+}
+
+if _COOKIES_FILE and os.path.isfile(_COOKIES_FILE):
+    YDL_BASE["cookiefile"] = _COOKIES_FILE
+
+YDL_SEARCH = dict(YDL_BASE)
+YDL_SEARCH["extract_flat"] = True   # بحث سريع بدون تحليل كامل للنتائج
+
+
+def _ydl_extract_sync(ydl_opts: dict, query: str) -> dict:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(query, download=False)
+
+
+async def ytdlp_search(query: str, count: int = 10) -> list:
+    """بحث نصي عبر yt-dlp — يعيد قائمة نتائج مختصرة."""
+    def _run():
+        info = _ydl_extract_sync(YDL_SEARCH, f"ytsearch{count}:{query}")
+        return (info or {}).get("entries") or []
+    try:
+        entries = await asyncio.to_thread(_run)
+    except Exception as e:
+        log.warning(f"yt-dlp search failed: {e!r}")
+        return []
+    out = []
+    for e in entries or []:
+        if not e:
+            continue
+        out.append({
+            "title": e.get("title") or "غير معروف",
+            "duration": int(e.get("duration") or 0),
+            "uploader": e.get("uploader") or e.get("channel") or "",
+            "url": e.get("url") or e.get("webpage_url") or "",
+            "id": e.get("id") or "",
+        })
+    return [x for x in out if x["url"]]
+
+
+async def ytdlp_resolve(url: str) -> dict:
+    """استخراج رابط الصوت المباشر لرابط/معرّف فيديو."""
+    def _run():
+        return _ydl_extract_sync(YDL_BASE, url)
+    info = await asyncio.to_thread(_run)
+    if not info:
+        raise RuntimeError("لم يتم العثور على نتائج")
+    if "entries" in info:
+        entries = [e for e in (info.get("entries") or []) if e]
+        if not entries:
+            raise RuntimeError("القائمة فارغة")
+        info = entries[0]
+    direct = info.get("url")
+    if not direct:
+        best = None
+        for f in info.get("formats") or []:
+            if f.get("acodec") not in (None, "none") or f.get("vcodec") in (None, "none"):
+                if (f.get("abr") or 0) and (best is None or (f.get("abr") or 0) > (best.get("abr") or 0)):
+                    if f.get("vcodec") in (None, "none"):
+                        best = f
+        direct = (best or {}).get("url") or info.get("webpage_url")
+    if not direct:
+        raise RuntimeError("لم يتم العثور على مسار صوتي")
+    return {
+        "title": info.get("title") or "غير معروف",
+        "duration": int(info.get("duration") or 0),
+        "uploader": info.get("uploader") or info.get("channel") or "",
+        "url": direct,
+        "webpage_url": info.get("webpage_url") or url,
+        "id": info.get("id") or "",
+    }
+
+
+# ─────────────────────────────────────────────
+#  قاعدة البيانات (MariaDB) — اختيارية وتتحمل الفشل
+# ─────────────────────────────────────────────
+class Database:
+    """غلاف بسيط حول PyMySQL — لا يُوقف البوت إذا كانت قاعدة البيانات غير متاحة."""
+
+    def __init__(self):
+        self.conn = None
+        self.available = False
+
+    def _connect(self):
+        self.conn = pymysql.connect(
+            host=MYSQL_HOST,
+            user="root",
+            password=MYSQL_ROOT_PASSWORD,
+            database=MYSQL_DATABASE,
+            charset="utf8mb4",
+            autocommit=True,
+            connect_timeout=5,
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+        self.available = True
+
+    def ensure(self):
+        try:
+            if self.conn is None:
+                self._connect()
+                return True
+            self.conn.ping(reconnect=True)
+            self.available = True
+            return True
+        except Exception as e:
+            self.available = False
+            log.debug(f"DB unavailable: {e!r}")
+            return False
+
+    def init_tables(self):
+        """محاولة إنشاء الجداول عند الإقلاع مع إعادة محاولة (MariaDB قد يتأخر)."""
+        ddl_history = (
+            "CREATE TABLE IF NOT EXISTS history ("
+            " id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+            " guild_id BIGINT NOT NULL,"
+            " user_id BIGINT DEFAULT 0,"
+            " user_name VARCHAR(128) DEFAULT '',"
+            " title VARCHAR(256) NOT NULL,"
+            " uri VARCHAR(512) DEFAULT '',"
+            " source VARCHAR(32) DEFAULT 'youtube',"
+            " played_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ") CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        )
+        ddl_settings = (
+            "CREATE TABLE IF NOT EXISTS guild_settings ("
+            " guild_id BIGINT PRIMARY KEY,"
+            " volume INT DEFAULT 100,"
+            " loop_mode VARCHAR(8) DEFAULT 'off',"
+            " stay_247 TINYINT DEFAULT 0"
+            ") CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        )
+        for attempt in range(1, 13):
+            try:
+                if self.ensure():
+                    self.exec(ddl_history)
+                    self.exec(ddl_settings)
+                    log.info("✅ قاعدة البيانات جاهزة (history + guild_settings)")
+                    return True
+            except Exception as e:
+                log.debug(f"DB init attempt {attempt} failed: {e!r}")
+            time.sleep(5)
+        log.warning("⚠️ تعذّر الوصول لقاعدة البيانات — سيستمر البوت بدون حفظ التاريخ/الإعدادات")
+        return False
+
+    def exec(self, sql: str, args: tuple = ()):
+        try:
+            if not self.ensure():
+                return False
+            with self.conn.cursor() as cur:
+                cur.execute(sql, args)
+            return True
+        except Exception as e:
+            log.debug(f"DB exec failed: {e!r}")
+            self.available = False
+            return False
+
+    def fetchall(self, sql: str, args: tuple = ()):
+        try:
+            if not self.ensure():
+                return None
+            with self.conn.cursor() as cur:
+                cur.execute(sql, args)
+                return cur.fetchall()
+        except Exception as e:
+            log.debug(f"DB fetch failed: {e!r}")
+            self.available = False
+            return None
+
+
+DB = Database()
+
+
+# ─────────────────────────────────────────────
+#  البوت الرئيسي
+# ─────────────────────────────────────────────
+def build_prefix():
+    """بادئة مرنة: الأوامر المعروفة تُقبل بدون بادئة، وغيرها يتطلب البادئة."""
+    def _prefix(bot, message):
+        content = (message.content or "").strip()
+        if not content:
+            return commands.when_mentioned_or(PREFIX)(bot, message)
+        first = content.split(maxsplit=1)[0].lower().lstrip(PREFIX).strip()
+        if first in BARE_OK:
+            return ""           # يُقبل بدون بادئة: play ياه تامر عاشور
+        return commands.when_mentioned_or(PREFIX)(bot, message)
+    return _prefix
+
+
+class ElminyaweBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.voice_states = True
+        super().__init__(
+            command_prefix=build_prefix(),
+            intents=intents,
+            help_command=None,
+            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 For ELMINYAWE<3"),
+        )
+
+    async def setup_hook(self):
+        """الاتصال بـ Lavalink أو التحويل لوضع الاحتياط، ثم تحميل الوحدة."""
+        global ENGINE
+        if not TOKEN or "PUT_YOUR" in TOKEN.upper():
+            log.critical(
+                "❌ لم يتم ضبط توكن البوت!\n"
+                "   ضع توكن بوتك في متغير البيئة DISCORD_TOKEN\n"
+                "   (في Railway: Variables → DISCORD_TOKEN)"
+            )
+            sys.exit(1)
+
+        connected = False
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                node = wavelink.Node(
+                    uri=f"http://{LAVALINK_HOST}:{LAVALINK_PORT}",
+                    password=LAVALINK_PASSWORD,
+                )
+                await wavelink.Pool.connect(client=self, nodes=[node])
+                connected = True
+                ENGINE = "lavalink"
+                log.info(f"✅ متصل بـ Lavalink ({LAVALINK_HOST}:{LAVALINK_PORT})")
+                break
+            except Exception as e:
+                last_err = e
+                log.warning(f"⚠️ محاولة {attempt}/3: تعذر الاتصال بـ Lavalink: {e!r}")
+                await asyncio.sleep(5)
+
+        if not connected:
+            ENGINE = "ffmpeg"
+            log.warning(
+                f"⚠️ تعذّر الاتصال بـ Lavalink نهائياً ({last_err!r}) —\n"
+                "   🔁 تشغيل وضع الاحتياط: البث المباشر عبر yt-dlp + ffmpeg"
+            )
+
+        await self.add_cog(MusicCog(self))
+
+        if TEST_MODE:
+            self.loop.create_task(run_test_flow(self))
+
+
+# ─────────────────────────────────────────────
+#  وحدة الموسيقى
+# ─────────────────────────────────────────────
 class MusicCog(commands.Cog):
-    """All music playback logic and commands."""
-
-    def __init__(self, bot):
+    def __init__(self, bot: ElminyaweBot):
         self.bot = bot
-        self.cfg: Config = bot.cfg
-        self.db: Database = bot.db
-        # Per-guild text channel used for announcements (now playing, errors...).
-        self.announce_channels: dict[int, discord.abc.Messageable] = {}
-        # Live playback state per guild (used to recover players when the
-        # Lavalink node loses its session, e.g. after a restart or downtime).
-        self._live: "dict[int, dict]" = {}
-        # Guards against concurrent player-recovery runs (two nodes coming
-        # back at once must not fight over the same voice connection).
-        self._recovering: bool = False
+        self.db = DB
 
-    # ================================================================== helpers
-    async def _ensure_voice_core(self, guild: discord.Guild,
-                                 member: discord.abc.User,
-                                 respond) -> "Optional[wavelink.Player]":
-        """Make sure the member is in a voice channel and the bot is connected.
+        # طوابير التشغيل لكل سيرفر (يُضاف إليها فقط بإجراء صريح من المستخدم)
+        self.queues: dict[int, list] = {}
+        # وضع التكرار لكل سيرفر: off / track / queue
+        self.loop_mode: dict[int, str] = {}
+        # خاصية 24/7 لكل سيرفر
+        self.stay_247: dict[int, bool] = {}
+        # مستخدم طلب التشغيل الأخير (للتاريخ)
+        self.last_requester: dict[int, discord.Member] = {}
+        # رسائل/مهام "شغّال الآن" (شريط التقدم الحي)
+        self._np_msgs: dict[int, discord.Message] = {}
+        self._np_tasks: dict[int, asyncio.Task] = {}
+        # آمن ضد حلقات الإصلاح: المقاطع التي جُرِّب إصلاحها مسبقاً لكل سيرفر
+        self._rescued: dict[int, set] = {}
+        # الانتظار المعلّق لقائمة الاختيار لكل مستخدم (epoch object)
+        self._pending: dict[int, object] = {}
+        # القناة النصية الأخيرة لكل سيرفر (لإرسال رسائل الإصلاح/الإشعارات)
+        self._text_channel: dict[int, discord.abc.Messageable] = {}
+        # وقت آخر نشاط صوتي (لقطع الاتصال عند الخمول)
+        self._idle_since: dict[int, float] = {}
+        # حالة محرك ffmpeg الاحتياطي لكل سيرفر
+        self._ff_state: dict[int, dict] = {}
 
-        ``respond(text)`` is used for error messages (works for both prefix
-        contexts and interactions).
-        """
-        if not isinstance(member, discord.Member):
-            await respond("Could not resolve your voice state.")
+        self._idle_task = self.bot.loop.create_task(self._idle_monitor())
+
+    def destroy(self):
+        if self._idle_task:
+            self._idle_task.cancel()
+
+    # ─────────────────────────────────────────
+    #  أدوات الصوت
+    # ─────────────────────────────────────────
+
+    def _target_channel(self, ctx) -> discord.abc.Connectable | None:
+        return ctx.author.voice.channel if (ctx.author and ctx.author.voice) else None
+
+    async def _ensure_voice(self, ctx):
+        """الاتصال/الانتقال للقناة الصوتية للمستخدم. يعيد مشغّل الصوت أو None."""
+        ch = self._target_channel(ctx)
+        if ch is None:
+            await ctx.reply("🔇 ادخل قناة صوتية أولاً حتى أستطيع التشغيل.", mention_on_error=True)
+            return None
+        perms = ch.permissions_for(ctx.guild.me)
+        if not perms.connect or not perms.speak:
+            await ctx.reply("⛔ ليس لدي صلاحية الاتصال/التحدث في تلك القناة.", mention_on_error=True)
             return None
 
-        voice_state = member.voice
-        if voice_state is None or voice_state.channel is None:
-            await respond("Join a voice channel first!")
-            return None
-
-        channel = voice_state.channel
-        existing = guild.voice_client
-
-        if isinstance(existing, wavelink.Player):
-            if existing.channel and existing.channel.id != channel.id:
-                await existing.move_to(channel)
-            return existing
-
-        permissions = channel.permissions_for(guild.me)
-        if not permissions.connect or not permissions.speak:
-            await respond("I need **Connect** and **Speak** permissions in that channel.")
-            return None
-
+        vc = ctx.guild.voice_client
+        cls = wavelink.Player if ENGINE == "lavalink" else discord.VoiceClient
         try:
-            player: wavelink.Player = await channel.connect(
-                cls=wavelink.Player, self_deaf=True, timeout=20.0)
-        except (discord.ClientException, wavelink.ChannelTimeoutException) as error:
-            log.warning("Voice connect failed in %s: %s", guild.id, error)
-            await respond("Could not connect to the voice channel. Try again.")
+            if vc is None:
+                vc = await ch.connect(cls=cls, self_deaf=True)
+                if isinstance(vc, wavelink.Player):
+                    # تعطيل التشغيل التلقائي تماماً — لا إضافة طوابير من تلقاء نفسها
+                    vc.autoplay = wavelink.AutoPlayMode.disabled
+                    await self._apply_settings(ctx.guild.id, vc)
+            elif vc.channel.id != ch.id:
+                await vc.move_to(ch)
+        except Exception as e:
+            log.error(f"voice connect failed: {e!r}")
+            await ctx.reply(f"❌ فشل الاتصال بالقناة الصوتية: `{e}`", mention_on_error=True)
             return None
+        return vc
 
-        stored_volume = await self.db.get_volume(guild.id)
-        await player.set_volume(stored_volume if stored_volume is not None
-                                else self.cfg.DEFAULT_VOLUME)
-        return player
+    def _queue_of(self, guild_id: int) -> list:
+        return self.queues.setdefault(guild_id, [])
 
-    async def ensure_voice(self, ctx: commands.Context) -> "Optional[wavelink.Player]":
-        if ctx.guild is None:
-            await ctx.send("This command only works inside a server.", ephemeral=True)
-            return None
-
-        async def respond(text: str):
-            await ctx.send(text, ephemeral=True)
-
-        return await self._ensure_voice_core(ctx.guild, ctx.author, respond)
-
-    async def ensure_voice_itx(self, itx: discord.Interaction) -> "Optional[wavelink.Player]":
-        if itx.guild is None:
-            await itx.followup.send("This command only works inside a server.",
-                                    ephemeral=True)
-            return None
-
-        async def respond(text: str):
-            await itx.followup.send(text, ephemeral=True)
-
-        return await self._ensure_voice_core(itx.guild, itx.user, respond)
-
-    async def fetch_tracks(self, query: str, source_key: "Optional[str]" = None
-                           ) -> "tuple[list[wavelink.Playable], Optional[str]]":
-        """Search for tracks. Returns (tracks, playlist_name).
-
-        YouTube blocks many datacenter IPs ("This video requires login"), so
-        if the YouTube/YouTubeMusic search fails or returns nothing we fall
-        back to SoundCloud automatically."""
-        is_url = bool(URL_REGEX.match(query))
-        explicit = bool(source_key and source_key.lower() in SOURCE_MAP)
-
-        if explicit:
-            source = SOURCE_MAP[source_key.lower()]
-            results = await wavelink.Playable.search(query, source=source)
-        elif is_url:
-            results = await wavelink.Playable.search(query)
-        else:
-            try:
-                results = await wavelink.Playable.search(
-                    query, source=wavelink.TrackSource.YouTubeMusic)
-            except Exception as error:
-                log.warning("YouTube search failed (%s) - falling back to "
-                            "SoundCloud.", error)
-                results = await wavelink.Playable.search(
-                    query, source=wavelink.TrackSource.SoundCloud)
-            else:
-                found = list(results.tracks if isinstance(results, wavelink.Playlist)
-                             else (results or []))
-                if not found:
-                    log.info("YouTube search empty - falling back to "
-                             "SoundCloud.")
-                    results = await wavelink.Playable.search(
-                        query, source=wavelink.TrackSource.SoundCloud)
-
-        if isinstance(results, wavelink.Playlist):
-            return list(results.tracks), results.name
-        return list(results or [])[:15], None
-
-    @staticmethod
-    def track_snapshot(track: wavelink.Playable, requester: "Optional[int]") -> dict:
-        return {"data": track.raw_data, "requester": requester}
-
-    async def persist_queue(self, player: wavelink.Player) -> None:
-        """Write the current in-memory queue to the database."""
-        try:
-            guild_id = player.guild.id
-        except AttributeError:
+    async def _apply_settings(self, guild_id: int, player: wavelink.Player):
+        """تحميل إعدادات السيرفر من قاعدة البيانات وتطبيقها."""
+        rows = self.db.fetchall(
+            "SELECT volume, loop_mode, stay_247 FROM guild_settings WHERE guild_id=%s", (guild_id,)
+        )
+        if not rows:
             return
-        items = [
-            {"data": track.raw_data, "requester": None}
-            for track in list(player.queue)
-        ]
-        await self.db.replace_queue(guild_id, items)
-
-    async def restore_queue(self, player: wavelink.Player) -> int:
-        """Restore a persisted queue after a restart (only if memory is empty)."""
-        if player.queue.count > 0:
-            return 0
-        saved = await self.db.get_queue(player.guild.id)
-        restored = 0
-        for item in saved:
+        row = rows[0]
+        vol = max(0, min(int(row.get("volume") or 100), 200))
+        self.loop_mode[guild_id] = (row.get("loop_mode") or "off")
+        self.stay_247[guild_id] = bool(row.get("stay_247"))
+        try:
+            await player.set_volume(vol)
+        except Exception:
             try:
-                track = wavelink.Playable(item["data"])
+                player.volume = vol
             except Exception:
-                continue
-            player.queue.put(track)
-            restored += 1
-        if restored:
-            log.info("Restored %s queued tracks for guild %s",
-                     restored, player.guild.id)
-        return restored
-
-    async def teardown(self, player: wavelink.Player,
-                       announce_to: "Optional[discord.abc.Messageable]" = None) -> None:
-        """Stop everything and disconnect."""
-        guild = player.guild
-        self._live.pop(guild.id, None)
-        player.queue.clear()
-        try:
-            await player.stop()
-        except Exception:
-            pass
-        try:
-            await player.disconnect()
-        except Exception:
-            pass
-        await self.db.replace_queue(guild.id, [])
-        if announce_to is not None:
-            try:
-                await announce_to.send("Disconnected. Queue cleared.")
-            except discord.HTTPException:
                 pass
 
-    async def persist_volume(self, guild: "Optional[discord.Guild]", volume: int) -> None:
-        if guild is not None:
-            await self.db.set_volume(guild.id, volume)
-
-    def announce_channel(self, guild: discord.Guild) -> "Optional[discord.abc.Messageable]":
-        channel = self.announce_channels.get(guild.id)
-        if channel is not None:
-            return channel
-        if guild.system_channel and guild.system_channel.permissions_for(
-                guild.me).send_messages:
-            return guild.system_channel
-        return None
-
-    # ================================================================== events
-    @commands.Cog.listener()
-    async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload):
-        log.info("Lavalink node ready: %s (session=%s, resumed=%s)",
-                 payload.node.identifier, payload.session_id, payload.resumed)
-        if payload.resumed:
-            # Lavalink restored the players itself (session resuming) - the
-            # audio continues seamlessly, nothing to rebuild.
-            return
-        # The node came back but the session was NOT resumed (e.g. Lavalink
-        # was restarted or down longer than the resume window). Wavelink keeps
-        # client-side player objects, but the Lavalink-side players are gone:
-        # the bot would sit in the voice channel in total silence. Rebuild.
-        if self._live and not self._recovering:
-            asyncio.create_task(self._recover_players())
-
-    async def _recover_players(self) -> None:
-        """Rebuild every player after Lavalink lost its session.
-
-        For each guild that was playing: reconnect to the same voice channel,
-        re-apply the stored volume, restore the persisted queue and resume the
-        current track at (approximately) the position it was at. If the exact
-        track cannot be resumed, the next queued track starts instead.
-        """
-        log.info("Recovering %s player(s) after Lavalink restart...",
-                 len(self._live))
-        self._recovering = True
+    def _save_settings(self, guild_id: int):
+        vol = 100
         try:
-            await self._recover_players_locked()
-        finally:
-            self._recovering = False
+            vc = self.bot.get_guild(guild_id).voice_client if self.bot.get_guild(guild_id) else None
+            if vc is not None:
+                vol = int(getattr(vc, "volume", 100) or 100)
+        except Exception:
+            pass
+        mode = self.loop_mode.get(guild_id, "off")
+        stay = 1 if self.stay_247.get(guild_id) else 0
+        self.db.exec(
+            "INSERT INTO guild_settings (guild_id, volume, loop_mode, stay_247) VALUES (%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE volume=VALUES(volume), loop_mode=VALUES(loop_mode), stay_247=VALUES(stay_247)",
+            (guild_id, vol, mode, stay),
+        )
 
-    async def _recover_players_locked(self) -> None:
-        for guild_id, state in list(self._live.items()):
-            guild = self.bot.get_guild(guild_id)
-            if guild is None:
-                self._live.pop(guild_id, None)
-                continue
-            existing = guild.voice_client
-            if isinstance(existing, wavelink.Player) \
-                    and existing.current is not None:
-                # Another node_ready event already recovered this guild.
-                continue
+    def _current_volume(self, guild) -> int:
+        try:
+            vc = guild.voice_client
+            if isinstance(vc, wavelink.Player):
+                return int(getattr(vc, "volume", 100) or 100)
+            if isinstance(vc, discord.VoiceClient):
+                src = vc.source
+                if isinstance(src, discord.PCMVolumeTransformer):
+                    return int(round(src.volume * 100))
+        except Exception:
+            pass
+        return 100
+
+    # ─────────────────────────────────────────
+    #  التحميل عبر Lavalink
+    # ─────────────────────────────────────────
+
+    async def _lavalink_load(self, query: str):
+        """تحميل عبر Lavalink. يعيد (قائمة مقاطع, قائمة تشغيل أو None).
+
+        يدعم: روابط مباشرة، روابط سبوتيفاي، وبادئات البحث (ytsearch: إلخ).
+        الاستعلام النصي العادي يُحوَّل تلقائياً إلى بحث يوتيوب.
+        """
+        query = (query or "").strip()
+        KNOWN_PREFIXES = ("ytsearch:", "ytmsearch:", "spsearch:", "sctrack:", "scsearch:", "http://", "https://")
+        if not any(query.startswith(p) for p in KNOWN_PREFIXES):
+            query = f"ytsearch:{query}"   # بحث نصي عادي → يوتيوب
+        res = await wavelink.Pool.fetch_tracks(query)
+        if isinstance(res, wavelink.Playlist):
+            return list(res.tracks or []), res
+        if isinstance(res, wavelink.Playable):
+            return [res], None
+        if isinstance(res, (list, wavelink.Search)):
+            return list(res), None
+        return [], None
+
+    # ─────────────────────────────────────────
+    #  أمر play — القائمة المرقّمة ثم اختيار رقم
+    # ─────────────────────────────────────────
+
+    @commands.command(name="play", aliases=["p"], help="تشغيل أغنية من يوتيوب/سبوتيفاي أو رابط مباشر")
+    async def play(self, ctx: commands.Context, *, query: str = None):
+        if not query:
+            await ctx.reply(
+                "✏️ اكتب اسم الأغنية أو الرابط بعد الأمر:\n"
+                f"`{PREFIX}play ياه تامر عاشور`",
+                mention_on_error=True,
+            )
+            return
+
+        vc = await self._ensure_voice(ctx)
+        if vc is None:
+            return
+
+        if is_url(query):
+            await self._play_url(ctx, query.strip())
+            return
+
+        # بحث نصي → قائمة نتائج مرقّمة → انتظار اختيار المستخدم
+        if ENGINE == "lavalink":
+            tracks, _pl = await self._lavalink_load(query)
+            results = [
+                {
+                    "title": t.title, "author": t.author or "",
+                    "duration": int(t.length or 0), "uri": t.uri or "", "track": t,
+                }
+                for t in (tracks or [])
+            ]
+        else:
+            entries = await ytdlp_search(query, 10)
+            results = [
+                {
+                    "title": e["title"], "author": e.get("uploader") or "",
+                    "duration": int(e.get("duration") or 0), "uri": e.get("url") or "", "entry": e,
+                }
+                for e in (entries or [])
+            ]
+
+        if not results:
+            await ctx.reply("😕 لا توجد نتائج للبحث — جرّب اسماً آخر.", mention_on_error=True)
+            return
+
+        chosen = await self._selection_menu(ctx, query, results)
+        if chosen is None:
+            return
+        await self._start_selected(ctx, results[chosen])
+
+    async def _selection_menu(self, ctx, query: str, results: list):
+        """عرض قائمة مرقّمة وانتظار اختيار المستخدم رقم الأغنية. يعيد الفهرس أو None."""
+        lines = []
+        for i, r in enumerate(results[:10], start=1):
+            dur = fmt_time(r.get("duration") or 0)
+            lines.append(f"**{i}.** [{r['title']}]({r.get('uri') or ''}) — `{dur}` {r.get('author') or ''}".replace("]()", "]"))
+        desc = (
+            f"🎵 **نتائج البحث عن:** «{query}»\n"
+            "─────────────────────\n" + "\n".join(lines) +
+            "\n─────────────────────\n"
+            "✏️ اكتب **رقم** الأغنية لاختيارها خلال **60 ثانية**\n"
+            "❌ أو اكتب **إلغاء**"
+        )
+        embed = discord.Embed(description=desc, color=discord.Color.blurple())
+        embed.set_footer(
+            text=f"طلبها: {ctx.author.display_name} • المحرك: {'Lavalink' if ENGINE == 'lavalink' else 'yt-dlp بديل'}"
+        )
+        msg = await ctx.reply(embed=embed, mention_on_error=True)
+
+        # إلغاء أي بحث معلّق سابق لنفس المستخدم (epoch جديد)
+        epoch = object()
+        self._pending[ctx.author.id] = epoch
+
+        def check(m: discord.Message):
+            if m.author.id != ctx.author.id or m.channel.id != ctx.channel.id:
+                return False
+            if self._pending.get(ctx.author.id) is not epoch:
+                return False
+            c = m.content.strip()
+            return c.isdigit() or c in CANCEL_WORDS
+
+        try:
             try:
-                channel_id = state.get("voice_channel_id")
-                channel = guild.get_channel(channel_id) if channel_id else None
-
-                old = guild.voice_client
-                if old is not None:
-                    try:
-                        await asyncio.wait_for(old.disconnect(force=True),
-                                               timeout=10)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    await asyncio.sleep(1)
-
-                if not isinstance(channel,
-                                  (discord.VoiceChannel, discord.StageChannel)):
-                    self._live.pop(guild_id, None)
-                    continue
-
-                player: wavelink.Player = await asyncio.wait_for(
-                    channel.connect(cls=wavelink.Player, self_deaf=True,
-                                    timeout=20.0),
-                    timeout=25.0)
-                stored_volume = await self.db.get_volume(guild.id)
-                await player.set_volume(
-                    stored_volume if stored_volume is not None
-                    else self.cfg.DEFAULT_VOLUME)
-                await self.restore_queue(player)
-
-                resumed = False
+                m = await self.bot.wait_for("message", check=check, timeout=60)
+            except asyncio.TimeoutError:
+                still = self._pending.get(ctx.author.id) is epoch
+                if still:
+                    self._pending.pop(ctx.author.id, None)
                 try:
-                    track = wavelink.Playable(state["track_raw"])
-                except Exception:  # noqa: BLE001
-                    track = None
-                if track is not None:
-                    elapsed_ms = int((time.time()
-                                      - state.get("started_at", time.time()))
-                                     * 1000)
-                    try:
-                        await player.play(track, start=max(0, elapsed_ms))
-                        resumed = True
-                    except Exception as error:  # noqa: BLE001
-                        log.warning("Could not resume the current track in "
-                                    "%s: %s", guild.id, error)
-                if not resumed:
-                    try:
-                        next_track = player.queue.get()
-                        await player.play(next_track)
-                    except wavelink.QueueEmpty:
-                        pass
+                    await msg.edit(
+                        embed=discord.Embed(
+                            description=("⌛ انتهى وقت الاختيار — أرسل الأمر من جديد." if still
+                                         else "🔄 أُلغي هذا البحث (تم بدء بحث أحدث)."),
+                            color=discord.Color.dark_grey(),
+                        )
+                    )
+                except Exception:
+                    pass
+                return None
 
-                log.info("Player recovered in guild %s after Lavalink "
-                         "restart.", guild.id)
-                announce = (self.announce_channels.get(guild.id)
-                            or self.announce_channel(guild))
-                if announce is not None:
-                    try:
-                        await announce.send(
-                            "\U0001F501 **Reconnected** to the audio engine "
-                            "and resumed playback.")
-                    except discord.HTTPException:
-                        pass
-            except Exception as error:  # noqa: BLE001
-                log.error("Player recovery failed in guild %s: %s",
-                          guild_id, error)
+            content = m.content.strip()
+            try:
+                await m.delete()
+            except Exception:
+                pass
+            if content in CANCEL_WORDS:
+                self._pending.pop(ctx.author.id, None)
+                try:
+                    await msg.edit(embed=discord.Embed(description="❌ تم الإلغاء.", color=discord.Color.dark_grey()))
+                except Exception:
+                    pass
+                return None
+            n = int(content)
+            if not (1 <= n <= min(len(results), 10)):
+                raise ValueError
+            self._pending.pop(ctx.author.id, None)
+            return n - 1
+        finally:
+            pass
+
+    async def _start_selected(self, ctx, result: dict):
+        """تشغيل الأغنية المختارة — أغنية واحدة فقط، بلا إضافة تلقائية للطابور."""
+        gid = ctx.guild.id
+        self.last_requester[gid] = ctx.author
+        if ENGINE == "lavalink":
+            await self._lavalink_start(ctx, result["track"], result["title"])
+        else:
+            await self._ff_play_resolved(ctx, result)
+
+    async def _play_url(self, ctx, url: str):
+        """رابط مباشر (يوتيوب/سبوتيفاي/قائمة تشغيل)."""
+        gid = ctx.guild.id
+        self.last_requester[gid] = ctx.author
+        if is_spotify(url) and ENGINE != "lavalink":
+            await ctx.reply(
+                "⚠️ روابط Spotify تعمل فقط عندما يكون محرك Lavalink نشطاً.\n"
+                "جرّب البحث بالاسم بدلاً من الرابط.",
+                mention_on_error=True,
+            )
+            return
+
+        if ENGINE == "lavalink":
+            try:
+                tracks, playlist = await self._lavalink_load(url)
+            except Exception as e:
+                await ctx.reply(f"❌ فشل تحميل الرابط: `{e}`", mention_on_error=True)
+                return
+            if not tracks:
+                await ctx.reply("😕 لم أجد شيئاً في هذا الرابط.", mention_on_error=True)
+                return
+            if playlist and len(tracks) > 1:
+                vc = await self._ensure_voice(ctx)
+                if vc is None:
+                    return
+                q = self._queue_of(gid)
+                playing = bool(getattr(vc, "playing", False) or getattr(vc, "is_playing", lambda: False)())
+                if playing or getattr(vc, "paused", False):
+                    q.extend(tracks)
+                    await ctx.reply(
+                        f"📜 أُضيفت **{len(tracks)}** أغنية من قائمة التشغيل «{playlist.name}» إلى الطابور.",
+                        mention_on_error=True,
+                    )
+                else:
+                    first = tracks.pop(0)
+                    q.extend(tracks)
+                    await self._lavalink_start(ctx, first, first.title, quiet=True)
+                    await ctx.reply(
+                        f"📜 تشغيل قائمة التشغيل «{playlist.name}» — **{len(tracks) + 1}** أغنية.",
+                        mention_on_error=True,
+                    )
+                return
+            await self._lavalink_start(ctx, tracks[0], tracks[0].title)
+        else:
+            # وضع الاحتياط: قوائم التشغيل الكاملة غير مدعومة — نأخذ العنصر الأول أو نبحث
+            if "list=" in url and "watch?" not in url and "/playlist" in url:
+                await ctx.reply(
+                    "⚠️ في وضع الاحتياط (yt-dlp) قوائم التشغيل الكاملة غير مدعومة — "
+                    "سيتم تشغيل أول أغنية فيها.",
+                    mention_on_error=True,
+                )
+            try:
+                info = await ytdlp_resolve(url)
+            except Exception as e:
+                await ctx.reply(f"❌ فشل استخراج الرابط: `{e}`", mention_on_error=True)
+                return
+            await self._ff_play_resolved(ctx, info)
+
+
+    # ─────────────────────────────────────────
+    #  بدء التشغيل عبر Lavalink
+    # ─────────────────────────────────────────
+
+    async def _lavalink_start(self, ctx, track, title: str = None, quiet: bool = False):
+        gid = ctx.guild.id
+        self._text_channel[gid] = ctx.channel
+        self._rescued[gid] = set()          # بداية نظيفة للإصلاح مع كل طلب جديد
+        vc = ctx.guild.voice_client
+        if not isinstance(vc, wavelink.Player):
+            vc = await self._ensure_voice(ctx)
+            if vc is None:
+                return
+        if getattr(vc, "playing", False) or getattr(vc, "paused", False):
+            q = self._queue_of(gid)
+            q.append(track)
+            if not quiet:
+                await ctx.reply(
+                    f"➕ أُضيفت إلى الطابور (الموقع {len(q)}): **{title or track.title}**",
+                    mention_author=False,
+                )
+            return
+        try:
+            vc.autoplay = wavelink.AutoPlayMode.disabled
+            await vc.play(track)
+        except Exception as e:
+            log.error(f"Lavalink play failed: {e!r}")
+            await ctx.reply(f"❌ فشل بدء التشغيل: `{e}`", mention_author=False)
+            return
+        if not quiet:
+            await ctx.reply(f"🎶 جاري تشغيل: **{title or track.title}**", mention_author=False)
+
+    # ─────────────────────────────────────────
+    #  أحداث Lavalink
+    # ─────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
-        player = payload.player
-        if player is None or player.guild is None:
-            return
-        track = payload.track
-        log.info("Track started in %s: %s", player.guild.id, track.title)
-        self._live[player.guild.id] = {
-            "voice_channel_id": player.channel.id if player.channel else None,
-            "track_raw": track.raw_data,
-            "started_at": time.time(),
-        }
-        channel = self.announce_channel(player.guild)
-        if channel is None:
-            return
         try:
-            view = NowPlayingView(self.bot)
-            await channel.send(embed=build_now_playing_embed(player), view=view)
-        except discord.HTTPException as error:
-            log.debug("Could not send now-playing embed: %s", error)
+            player = payload.player
+            track = payload.track
+            if player is None or track is None:
+                return
+            gid = player.guild.id
+            self._idle_since.pop(gid, None)
+            # حماية إضافية: لا تشغيل تلقائي مطلقاً
+            try:
+                player.autoplay = wavelink.AutoPlayMode.disabled
+            except Exception:
+                pass
+            self._cancel_np_task(gid)
+            await self._send_np_message(gid, player)
+            await self._insert_history(gid, track.title or "", track.uri or "",
+                                       getattr(track, "source", "") or "youtube")
+        except Exception as e:
+            log.error(f"track_start handler error: {e!r}")
 
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
-        player = payload.player
-        if player is None or player.guild is None:
-            return
-        reason = payload.reason
-
-        if reason not in ("finished", "loadFailed"):
-            # "stopped" / "replaced" / "cancelled": we intentionally started
-            # something else, the queue must NOT advance.
-            return
-
-        channel = self.announce_channel(player.guild)
-
-        if reason == "loadFailed":
-            # YouTube often rejects datacenter IPs at playback time ("This
-            # video requires login"). Try a SoundCloud replacement for the
-            # same song before giving up and advancing the queue.
-            failed = payload.track
-            replacement = await self._soundcloud_replacement(failed)
-            if replacement is not None:
-                try:
-                    await player.play(replacement)
-                    log.info("Rescued playback via SoundCloud: %s",
-                             getattr(replacement, "title", "?"))
-                    if channel is not None:
-                        try:
-                            await channel.send(
-                                f"YouTube failed for **{failed.title}** - "
-                                "playing it from SoundCloud instead.")
-                        except discord.HTTPException:
-                            pass
-                    await self.persist_queue(player)
-                    return
-                except Exception as error:
-                    log.warning("SoundCloud replacement play failed: %s", error)
-            if channel is not None:
-                try:
-                    await channel.send(
-                        f"Track failed to load: **{payload.track.title}** - skipping.")
-                except discord.HTTPException:
-                    pass
-
         try:
-            next_track = player.queue.get()
-        except wavelink.QueueEmpty:
-            await self.persist_queue(player)
-            channel = self.announce_channel(player.guild)
-            if channel is not None and reason == "finished":
-                try:
-                    await channel.send("Queue finished. Add more music with `/play`!")
-                except discord.HTTPException:
-                    pass
-            return
-
-        try:
-            await player.play(next_track)
-        except Exception as error:
-            log.error("Failed to start next track: %s", error)
-        await self.persist_queue(player)
-
-    async def _soundcloud_replacement(self, failed):
-        """Find a SoundCloud stand-in for a track that failed to play.
-
-        Each song is rescued at most once (tracked in self._rescued) so a
-        failing SoundCloud track cannot create an endless rescue loop."""
-        if failed is None:
-            return None
-        title = getattr(failed, "title", "")
-        author = getattr(failed, "author", "")
-        query = " ".join(x for x in (title, author) if x)
-        if not query:
-            return None
-        key = query.lower()
-        if key in self._rescued:
-            return None
-        self._rescued.add(key)
-        try:
-            results = await wavelink.Playable.search(
-                query, source=wavelink.TrackSource.SoundCloud)
-        except Exception as error:
-            log.warning("SoundCloud replacement search failed: %s", error)
-            return None
-        for candidate in (results or []):
-            if getattr(candidate, "identifier", "") != getattr(failed, "identifier", ""):
-                return candidate
-        return None
-
-    @commands.Cog.listener()
-    async def on_wavelink_track_exception(self, payload):
-        player = getattr(payload, "player", None)
-        track = getattr(payload, "track", None)
-        log.warning("Track exception: %s", getattr(track, "title", "unknown"))
-
-    @commands.Cog.listener()
-    async def on_wavelink_track_stuck(self, payload):
-        player = getattr(payload, "player", None)
-        if player is not None:
-            try:
-                await player.skip(force=True)
-            except Exception:
-                pass
-
-    @commands.Cog.listener()
-    async def on_wavelink_inactive_player(self, player: wavelink.Player):
-        """Fires after AUTO_DISCONNECT_SECONDS of inactivity (wavelink built-in)."""
-        if self.cfg.AUTO_DISCONNECT_SECONDS <= 0:
-            return
-        log.info("Player inactive in guild %s - disconnecting.", player.guild.id)
-        channel = self.announce_channel(player.guild)
-        await self.teardown(player)
-        if channel is not None:
-            try:
-                await channel.send(
-                    "Left the voice channel due to inactivity.")
-            except discord.HTTPException:
-                pass
-
-    # ================================================================== play
-    @commands.hybrid_command(name="play", aliases=["p", "add"],
-                             description="Play a song or playlist from a URL or search term.")
-    @app_commands.describe(query="Song name or URL (YouTube / Spotify / SoundCloud / Deezer)")
-    async def play(self, ctx: commands.Context, *, query: str):
-        # Ephemeral defer first (slash needs a fast ack); the final message is
-        # still public because it is sent as a followup.
-        await ctx.defer(ephemeral=True)
-        self.announce_channels[ctx.guild.id] = ctx.channel  # type: ignore[union-attr]
-
-        player = await self.ensure_voice(ctx)
-        if player is None:
-            return
-
-        # Restore a queue persisted before a restart, so it is not lost.
-        await self.restore_queue(player)
-
-        try:
-            tracks, playlist_name = await self.fetch_tracks(query)
-        except wavelink.LavalinkLoadException as error:
-            log.warning("Load failed for %r: %s", query, error)
-            await ctx.send("Could not load that track/URL. Try a different link or name.")
-            return
-
-        if not tracks:
-            await ctx.send(f"No results for: **{query}**")
-            return
-
-        for track in tracks:
-            player.queue.put(track)
-
-        total = len(tracks)
-        first = tracks[0]
-
-        if player.current is None:
-            try:
-                next_track = player.queue.get()
-                await player.play(next_track)
-            except wavelink.QueueEmpty:
-                await ctx.send("Something went wrong starting playback. Try again.")
-                return
-
-        if playlist_name:
-            message = (f"Loaded playlist **{playlist_name}** with "
-                       f"**{total}** tracks from **{first.source}**.")
-        elif total > 1:
-            message = (f"Queued **{total}** tracks. Starting with "
-                       f"**{first.title}**.")
-        elif player.current is first:
-            message = f"Playing **{first.title}**."
-        else:
-            message = (f"Queued **{first.title}** at position "
-                       f"**{player.queue.count}** in the queue.")
-        await ctx.send(message)
-        await self.persist_queue(player)
-
-    @commands.hybrid_command(name="search", description="Search and pick a track with buttons.")
-    @app_commands.describe(query="What to search for")
-    async def search(self, ctx: commands.Context, *, query: str):
-        await ctx.defer(ephemeral=True)
-        self.announce_channels[ctx.guild.id] = ctx.channel  # type: ignore[union-attr]
-        try:
-            tracks, _ = await self.fetch_tracks(query)
-        except wavelink.LavalinkLoadException:
-            await ctx.send("Could not search for that. Try again.")
-            return
-        if not tracks:
-            await ctx.send(f"No results for: **{query}**")
-            return
-
-        lines = []
-        for index, track in enumerate(tracks[:5]):
-            lines.append(f"**{index + 1}.** [{track.title}]({track.uri}) "
-                         f"`{format_time(track.length)}`")
-        embed = discord.Embed(title=f"Results for: {query}",
-                              description="\n".join(lines), color=0x5865F2)
-        embed.set_footer(text="Pick a track with the buttons (60 seconds).")
-
-        async def on_pick(interaction: discord.Interaction,
-                          track: wavelink.Playable):
-            player = await self.ensure_voice_itx(interaction)
+            player = payload.player
+            track = payload.track
+            reason = getattr(payload, "reason", "") or ""
             if player is None:
                 return
-            player.queue.put(track)
-            if player.current is None:
-                next_track = player.queue.get()
-                await player.play(next_track)
-            await self.persist_queue(player)
-            await interaction.followup.send(
-                f"Queued **{track.title}**.", ephemeral=False)
+            gid = player.guild.id
+            self._cancel_np_task(gid)
 
-        view = SearchView(ctx.author, on_pick)
-        view.build_buttons(tracks)
-        message = await ctx.send(embed=embed, view=view)
-        view.message = message
-
-    # ================================================================== control
-    @commands.hybrid_command(name="pause", description="Pause the current track.")
-    async def pause(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.current is None:
-            await ctx.send("Nothing is playing right now.", ephemeral=True)
-            return
-        if player.paused:
-            await ctx.send("Already paused.", ephemeral=True)
-            return
-        await player.pause(True)
-        await ctx.send("Paused.")
-
-    @commands.hybrid_command(name="resume", aliases=["unpause"],
-                             description="Resume the paused track.")
-    async def resume(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.current is None:
-            await ctx.send("Nothing is paused right now.", ephemeral=True)
-            return
-        if not player.paused:
-            await ctx.send("Music is already playing.", ephemeral=True)
-            return
-        await player.pause(False)
-        await ctx.send("Resumed.")
-
-    @commands.hybrid_command(name="skip", aliases=["s", "next"],
-                             description="Skip the current track.")
-    async def skip(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.current is None:
-            await ctx.send("Nothing to skip.", ephemeral=True)
-            return
-        await ctx.defer()
-
-        was_looping = player.queue.mode == wavelink.QueueMode.loop
-        if was_looping:
-            player.queue.mode = wavelink.QueueMode.normal
-        try:
-            next_track = player.queue.get()
-        except wavelink.QueueEmpty:
-            next_track = None
-        finally:
-            if was_looping:
-                player.queue.mode = wavelink.QueueMode.loop
-
-        if next_track is None:
-            await player.stop()
-            await ctx.send("Queue is empty. Playback stopped.")
-            await self.persist_queue(player)
-            return
-
-        await player.play(next_track)
-        await ctx.send(f"Skipped. Now playing **{next_track.title}**.")
-        await self.persist_queue(player)
-
-    @commands.hybrid_command(name="stop", aliases=["leave", "dc", "disconnect"],
-                             description="Stop playback and leave the voice channel.")
-    async def stop(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player):
-            await ctx.send("I am not connected to a voice channel.", ephemeral=True)
-            return
-        await ctx.defer()
-        await self.teardown(player, announce_to=None)
-        await ctx.send("Stopped and disconnected.")
-
-    @commands.hybrid_command(name="join", aliases=["summon"],
-                             description="Join your voice channel.")
-    async def join(self, ctx: commands.Context):
-        player = await self.ensure_voice(ctx)
-        if player is not None:
-            await ctx.send(f"Joined **{player.channel.name}**.")
-
-    @commands.hybrid_command(name="volume", aliases=["vol"],
-                             description="Set the playback volume (0-max).")
-    @app_commands.describe(volume="New volume (0-150, default 60)")
-    async def volume(self, ctx: commands.Context, volume: commands.Range[int, 0, 200]):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player):
-            await ctx.send("I am not connected to a voice channel.", ephemeral=True)
-            return
-        volume = min(volume, self.cfg.MAX_VOLUME)
-        await player.set_volume(volume)
-        await self.persist_volume(ctx.guild, volume)
-        await ctx.send(f"Volume set to **{volume}%**.")
-
-    @commands.hybrid_command(name="loop", description="Loop the current track or the whole queue.")
-    @app_commands.describe(mode="off = no loop, track = repeat current, queue = loop all")
-    async def loop(self, ctx: commands.Context, mode: str = "track"):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player):
-            await ctx.send("I am not connected to a voice channel.", ephemeral=True)
-            return
-        mode = mode.lower()
-        modes = {"off": wavelink.QueueMode.normal,
-                 "none": wavelink.QueueMode.normal,
-                 "track": wavelink.QueueMode.loop,
-                 "one": wavelink.QueueMode.loop,
-                 "queue": wavelink.QueueMode.loop_all,
-                 "all": wavelink.QueueMode.loop_all}
-        if mode not in modes:
-            await ctx.send("Usage: `loop off|track|queue`", ephemeral=True)
-            return
-        player.queue.mode = modes[mode]
-        names = {wavelink.QueueMode.normal: "off",
-                 wavelink.QueueMode.loop: "current track",
-                 wavelink.QueueMode.loop_all: "whole queue"}
-        await ctx.send(f"Looping is now **{names[player.queue.mode]}**.")
-
-    @commands.hybrid_command(name="shuffle", description="Shuffle the queue.")
-    async def shuffle(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.queue.count < 2:
-            await ctx.send("Need at least 2 tracks in the queue to shuffle.",
-                           ephemeral=True)
-            return
-        player.queue.shuffle()
-        await self.persist_queue(player)
-        await ctx.send(f"Shuffled **{player.queue.count}** tracks.")
-
-    @commands.hybrid_command(name="clear", description="Clear the queue (keeps current track).")
-    async def clear(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.queue.count == 0:
-            await ctx.send("The queue is already empty.", ephemeral=True)
-            return
-        removed = player.queue.count
-        player.queue.clear()
-        await self.persist_queue(player)
-        await ctx.send(f"Removed **{removed}** tracks from the queue.")
-
-    @commands.hybrid_command(name="remove", description="Remove a track from the queue by position.")
-    @app_commands.describe(position="Queue position (see the queue command)")
-    async def remove(self, ctx: commands.Context, position: commands.Range[int, 1, 500]):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.queue.count == 0:
-            await ctx.send("The queue is empty.", ephemeral=True)
-            return
-        index = position - 1
-        if index >= player.queue.count:
-            await ctx.send(f"There is no position **{position}** "
-                           f"(queue has {player.queue.count} tracks).", ephemeral=True)
-            return
-        track = player.queue[index]
-        del player.queue[index]
-        await self.persist_queue(player)
-        await ctx.send(f"Removed **{track.title}** from the queue.")
-
-    @commands.hybrid_command(name="skipto", aliases=["jumpto"],
-                             description="Skip to a specific position in the queue.")
-    @app_commands.describe(position="Queue position to jump to")
-    async def skipto(self, ctx: commands.Context, position: commands.Range[int, 1, 500]):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.queue.count == 0:
-            await ctx.send("The queue is empty.", ephemeral=True)
-            return
-        index = position - 1
-        if index >= player.queue.count:
-            await ctx.send(f"There is no position **{position}** "
-                           f"(queue has {player.queue.count} tracks).", ephemeral=True)
-            return
-        await ctx.defer()
-        for _ in range(index):
-            try:
-                player.queue.get()
-            except wavelink.QueueEmpty:
-                break
-        target = player.queue.get()
-        await player.play(target)
-        await self.persist_queue(player)
-        await ctx.send(f"Jumped to **{target.title}** (position {position}).")
-
-    @commands.hybrid_command(name="seek",
-                             description="Seek within the current track (seconds or m:ss).")
-    @app_commands.describe(position="Time like 90 or 1:30")
-    async def seek(self, ctx: commands.Context, *, position: str):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.current is None:
-            await ctx.send("Nothing is playing right now.", ephemeral=True)
-            return
-        if not player.current.is_seekable:
-            await ctx.send("This track cannot be seeked (live stream).", ephemeral=True)
-            return
-        seconds = parse_time(position)
-        if seconds is None:
-            await ctx.send("Could not parse that time. Examples: `45`, `1:30`, `2:05:10`.",
-                           ephemeral=True)
-            return
-        seconds = min(seconds, int(player.current.length / 1000))
-        await player.seek(seconds * 1000)
-        await ctx.send(f"Seeked to **{format_time(seconds * 1000)}**.")
-
-    @commands.hybrid_command(name="replay", description="Restart the current track.")
-    async def replay(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.current is None:
-            await ctx.send("Nothing is playing right now.", ephemeral=True)
-            return
-        await player.seek(0)
-        await ctx.send("Restarted the current track.")
-
-    # ================================================================== info
-    @commands.hybrid_command(name="queue", aliases=["q"],
-                             description="Show the current queue.")
-    async def queue(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player):
-            await ctx.send("I am not connected to a voice channel.", ephemeral=True)
-            return
-
-        embed = discord.Embed(title="Queue", color=0x5865F2)
-        if player.current is not None:
-            embed.add_field(
-                name="Now playing",
-                value=f"[{player.current.title}]({player.current.uri}) "
-                      f"`{format_time(player.position)} / {format_time(player.current.length)}`",
-                inline=False,
-            )
-        queued = list(player.queue)
-        if not queued:
-            embed.description = "The queue is empty. Add music with `/play`!"
-        else:
-            lines = []
-            for index, track in enumerate(queued[:10], start=1):
-                lines.append(f"`{index}.` [{track.title}]({track.uri}) "
-                             f"`{format_time(track.length)}`")
-            embed.description = "\n".join(lines)
-            if len(queued) > 10:
-                embed.set_footer(text=f"...and {len(queued) - 10} more tracks. "
-                                      f"Total length: {format_time(sum(t.length for t in queued))}")
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="nowplaying", aliases=["np"],
-                             description="Show the track that is currently playing.")
-    async def nowplaying(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.current is None:
-            await ctx.send("Nothing is playing right now.", ephemeral=True)
-            return
-        await ctx.send(embed=build_now_playing_embed(player))
-
-    @commands.hybrid_command(name="history",
-                             description="Show recently played tracks.")
-    async def history(self, ctx: commands.Context):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player) or player.history.count == 0:
-            await ctx.send("No tracks have been played yet.", ephemeral=True)
-            return
-        items = list(player.history)[-5:][::-1]
-        lines = [f"[{track.title}]({track.uri})" for track in items]
-        embed = discord.Embed(title="Recently played",
-                              description="\n".join(lines), color=0x5865F2)
-        await ctx.send(embed=embed)
-
-    # ================================================================== playlists
-    @commands.hybrid_group(name="playlist", aliases=["pl"],
-                           description="Manage saved playlists.",
-                           invoke_without_command=True)
-    async def playlist(self, ctx: commands.Context):
-        rows = await self.db.playlist_list(ctx.guild.id)  # type: ignore[union-attr]
-        if not rows:
-            await ctx.send("No saved playlists yet. Create one with "
-                           "`/playlist create <name>`.")
-            return
-        lines = [f"**{name}** - {count} tracks" for _, name, count in rows]
-        embed = discord.Embed(title="Saved playlists",
-                              description="\n".join(lines), color=0x5865F2)
-        await ctx.send(embed=embed)
-
-    @playlist.command(name="create", description="Create a new empty playlist.")
-    @app_commands.describe(name="Playlist name")
-    async def playlist_create(self, ctx: commands.Context, *, name: str):
-        name = name.strip()[:100]
-        created = await self.db.playlist_create(ctx.guild.id, name,  # type: ignore[union-attr]
-                                                ctx.author.id)  # type: ignore[union-attr]
-        if not created:
-            await ctx.send(f"A playlist named **{name}** already exists.", ephemeral=True)
-            return
-        await ctx.send(f"Playlist **{name}** created. Add songs with "
-                       f"`/playlist add {name}` while music is playing.")
-
-    @playlist.command(name="delete", description="Delete a saved playlist.")
-    @app_commands.describe(name="Playlist name")
-    async def playlist_delete(self, ctx: commands.Context, *, name: str):
-        deleted = await self.db.playlist_delete(ctx.guild.id, name.strip())  # type: ignore[union-attr]
-        if not deleted:
-            await ctx.send(f"No playlist named **{name}**.", ephemeral=True)
-            return
-        await ctx.send(f"Playlist **{name}** deleted.")
-
-    @playlist.command(name="add", description="Save the current track (or whole queue) to a playlist.")
-    @app_commands.describe(name="Playlist name", scope="track = current song only, queue = whole queue")
-    async def playlist_add(self, ctx: commands.Context, *, name: str,
-                           scope: str = "track"):
-        player = ctx.guild.voice_client if ctx.guild else None
-        if not isinstance(player, wavelink.Player):
-            await ctx.send("Nothing is playing right now.", ephemeral=True)
-            return
-        pl = await self.db.playlist_get(ctx.guild.id, name.strip())  # type: ignore[union-attr]
-        if pl is None:
-            await ctx.send(f"No playlist named **{name}**. Create it first with "
-                           f"`/playlist create {name}`.", ephemeral=True)
-            return
-
-        requester = ctx.author.id  # type: ignore[union-attr]
-        if scope.lower() == "queue":
-            items = []
-            if player.current is not None:
-                items.append(self.track_snapshot(player.current, requester))
-            items.extend({"data": t.raw_data, "requester": requester}
-                         for t in list(player.queue))
-            tracks = items
-        else:
-            if player.current is None:
-                await ctx.send("Nothing is playing right now.", ephemeral=True)
+            if reason in ("stopped", "replaced", "cleanup"):
                 return
-            tracks = [self.track_snapshot(player.current, requester)]
 
-        added = await self.db.playlist_add_tracks(pl["id"], tracks)
-        await ctx.send(f"Added **{added}** tracks to playlist **{name}**.")
+            if reason == "loadFailed":
+                await self._rescue_or_advance(player, track)
+                return
 
-    @playlist.command(name="load", description="Load a playlist into the queue.")
-    @app_commands.describe(name="Playlist name")
-    async def playlist_load(self, ctx: commands.Context, *, name: str):
-        player = await self.ensure_voice(ctx)
-        if player is None:
-            return
-        pl = await self.db.playlist_get(ctx.guild.id, name.strip())  # type: ignore[union-attr]
-        if pl is None:
-            await ctx.send(f"No playlist named **{name}**.", ephemeral=True)
-            return
-        items = await self.db.playlist_get_tracks(pl["id"])
-        tracks = []
-        for item in items:
+            await self._advance_or_stop(player, finished_track=track, failed=False)
+        except Exception as e:
+            log.error(f"track_end handler error: {e!r}")
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_exception(self, payload: wavelink.TrackExceptionEventPayload):
+        # لا نُقدّم هنا — حدث انتهاء المسار (loadFailed) هو من يُدير الإصلاح
+        try:
+            t = getattr(payload, "track", None)
+            log.warning(f"track exception: {t.title if t else '?'}")
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_stuck(self, payload: wavelink.TrackStuckEventPayload):
+        try:
+            log.warning(f"track stuck: {getattr(payload.track, 'title', '?')}")
+        except Exception:
+            pass
+
+    async def _rescue_or_advance(self, player: wavelink.Player, failed_track):
+        """إصلاح تلقائي عند فشل يوتيوب: استخراج رابط صوت مباشر عبر yt-dlp ثم
+        بثّه عبر مصدر HTTP في Lavalink. إذا سبق الإصلاح → الانتقال للتالي."""
+        gid = player.guild.id
+        rescued = self._rescued.setdefault(gid, set())
+        key = getattr(failed_track, "identifier", None) or getattr(failed_track, "uri", "") or str(failed_track)
+        url = getattr(failed_track, "uri", None)
+
+        if url and key not in rescued:
+            rescued.add(key)
             try:
-                tracks.append(wavelink.Playable(item["data"]))
-            except Exception:
-                continue
-        if not tracks:
-            await ctx.send(f"Playlist **{name}** is empty or its tracks could "
-                           "not be restored.", ephemeral=True)
-            return
-        for track in tracks:
-            player.queue.put(track)
-        if player.current is None:
-            next_track = player.queue.get()
-            await player.play(next_track)
-        await self.persist_queue(player)
-        await ctx.send(f"Loaded **{len(tracks)}** tracks from playlist **{name}**.")
+                ch = self._text_channel.get(gid)
+                info = await ytdlp_resolve(url)
+                loaded, _pl = await self._lavalink_load(info["url"])
+                if loaded:
+                    player.autoplay = wavelink.AutoPlayMode.disabled
+                    await player.play(loaded[0])
+                    if ch is not None:
+                        try:
+                            await ch.send(f"🔁 تم إصلاح التشغيل وبثّه عبر مسار بديل: **{failed_track.title}**")
+                        except Exception:
+                            pass
+                    return
+            except Exception as e:
+                log.warning(f"rescue failed for {failed_track.title!r}: {e!r}")
 
-    @playlist.command(name="info", description="Show the tracks inside a playlist.")
-    @app_commands.describe(name="Playlist name")
-    async def playlist_info(self, ctx: commands.Context, *, name: str):
-        pl = await self.db.playlist_get(ctx.guild.id, name.strip())  # type: ignore[union-attr]
-        if pl is None:
-            await ctx.send(f"No playlist named **{name}**.", ephemeral=True)
+        await self._advance_or_stop(player, finished_track=None, failed=True)
+
+    async def _advance_or_stop(self, player: wavelink.Player, finished_track=None, failed: bool = False):
+        """الانتقال للعنصر التالي في الطابور فقط — لا إضافة تلقائية أبداً."""
+        gid = player.guild.id
+        q = self._queue_of(gid)
+        mode = self.loop_mode.get(gid, "off")
+        finished_title = getattr(finished_track, "title", "") or ""
+
+        if finished_track is not None and not failed:
+            if mode == "track":
+                try:
+                    player.autoplay = wavelink.AutoPlayMode.disabled
+                    await player.play(finished_track)
+                    return
+                except Exception as e:
+                    log.warning(f"loop replay failed: {e!r}")
+            elif mode == "queue":
+                q.append(finished_track)
+
+        nxt = q.pop(0) if q else None
+        if nxt is not None:
+            try:
+                player.autoplay = wavelink.AutoPlayMode.disabled
+                await player.play(nxt)
+                return
+            except Exception as e:
+                log.warning(f"advance play failed: {e!r}")
+
+        self._idle_since[gid] = time.monotonic()
+        if failed:
+            ch = self._text_channel.get(gid)
+            if ch is not None:
+                msg = "⛔ فشل تشغيل المقطع وتعذّر إصلاحه عبر المسار البديل."
+                if finished_title:
+                    msg += f"\n({finished_title})"
+                try:
+                    await ch.send(msg)
+                except Exception:
+                    pass
+
+    # ─────────────────────────────────────────
+    #  رسالة "شغّال الآن" + شريط التقدم الحي
+    # ─────────────────────────────────────────
+
+    def _cancel_np_task(self, gid: int):
+        task = self._np_tasks.pop(gid, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _np_embed(self, gid: int, position_ms: int, duration_ms: int, title: str,
+                  author: str, uri: str) -> discord.Embed:
+        vc = self.bot.get_guild(gid).voice_client if self.bot.get_guild(gid) else None
+        vol = self._current_volume(self.bot.get_guild(gid)) if self.bot.get_guild(gid) else 100
+        playing = "▶️" if not (getattr(vc, "paused", False) or (vc and vc.is_paused())) else "⏸️"
+        desc = f"{playing} **[{title}]({uri})**\n" if uri else f"{playing} **{title}**\n"
+        desc += f"🎤 {author}\n\n" if author else "\n"
+        desc += f"`[{progress_bar(position_ms, duration_ms)}]` **{fmt_time(position_ms)} / {fmt_time(duration_ms)}**\n"
+        mode = self.loop_mode.get(gid, "off")
+        q_len = len(self._queue_of(gid))
+        engine = "Lavalink 🛡" if ENGINE == "lavalink" else "yt-dlp بديل 🔧"
+        desc += f"\n🔁 التكرار: `{mode}` • 🔊 `{vol}%` • 📜 الطابور: `{q_len}` • المحرك: `{engine}`"
+        return discord.Embed(title="شغّال الآن", description=desc, color=discord.Color.green())
+
+    async def _send_np_message(self, gid: int, player: wavelink.Player):
+        track = player.current
+        if track is None:
             return
-        items = await self.db.playlist_get_tracks(pl["id"])
-        if not items:
-            await ctx.send(f"Playlist **{name}** is empty.")
+        ch = self._text_channel.get(gid)
+        if ch is None:
+            return
+        embed = self._np_embed(gid, int(player.position or 0), int(track.length or 0),
+                               track.title or "", track.author or "", track.uri or "")
+        try:
+            old = self._np_msgs.pop(gid, None)
+            if old is not None:
+                try:
+                    await old.delete()
+                except Exception:
+                    pass
+            msg = await ch.send(embed=embed)
+            self._np_msgs[gid] = msg
+        except Exception as e:
+            log.debug(f"np send failed: {e!r}")
+            return
+
+        async def _updater():
+            try:
+                while True:
+                    await asyncio.sleep(15)
+                    cur = player.current or track
+                    pos = int(player.position or 0)
+                    try:
+                        await self._np_msgs[gid].edit(
+                            embed=self._np_embed(gid, pos, int(cur.length or 0),
+                                                 cur.title or "", cur.author or "", cur.uri or "")
+                        )
+                    except discord.NotFound:
+                        break
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                pass
+
+        self._np_tasks[gid] = self.bot.loop.create_task(_updater())
+
+    async def _ff_np_message(self, gid: int, vc: discord.VoiceClient, info: dict):
+        ch = self._text_channel.get(gid)
+        if ch is None:
+            return
+        try:
+            old = self._np_msgs.pop(gid, None)
+            if old is not None:
+                try:
+                    await old.delete()
+                except Exception:
+                    pass
+            pos_ms = int(self._ff_elapsed(gid) * 1000)
+            msg = await ch.send(embed=self._np_embed(
+                gid, pos_ms, int(info.get("duration") or 0) * 1000,
+                info.get("title") or "", info.get("uploader") or "", info.get("webpage_url") or ""))
+            self._np_msgs[gid] = msg
+        except Exception as e:
+            log.debug(f"ff np send failed: {e!r}")
+            return
+
+        async def _updater():
+            try:
+                while True:
+                    await asyncio.sleep(15)
+                    st = self._ff_state.get(gid)
+                    if not st or st.get("current") is None:
+                        break
+                    cur = st["current"]
+                    pos_ms = int(self._ff_elapsed(gid) * 1000)
+                    try:
+                        await self._np_msgs[gid].edit(embed=self._np_embed(
+                            gid, pos_ms, int(cur.get("duration") or 0) * 1000,
+                            cur.get("title") or "", cur.get("uploader") or "",
+                            cur.get("webpage_url") or ""))
+                    except discord.NotFound:
+                        break
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                pass
+
+        self._np_tasks[gid] = self.bot.loop.create_task(_updater())
+
+    # ─────────────────────────────────────────
+    #  سجل التاريخ
+    # ─────────────────────────────────────────
+
+    async def _insert_history(self, gid: int, title: str, uri: str, source: str):
+        user = self.last_requester.get(gid)
+        uid = user.id if user else 0
+        uname = user.display_name if user else ""
+        await asyncio.to_thread(
+            self.db.exec,
+            "INSERT INTO history (guild_id, user_id, user_name, title, uri, source) VALUES (%s,%s,%s,%s,%s,%s)",
+            (gid, uid, uname[:128], title[:256], uri[:512], source[:32]),
+        )
+
+    # ─────────────────────────────────────────
+    #  مراقب الخمول — قطع الاتصال بعد فترة خمول (إلا مع 24/7)
+    # ─────────────────────────────────────────
+
+    async def _idle_monitor(self):
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                await asyncio.sleep(30)
+                now = time.monotonic()
+                for vc in list(self.bot.voice_clients):
+                    gid = vc.guild.id
+                    if isinstance(vc, wavelink.Player):
+                        busy = bool(getattr(vc, "playing", False) or getattr(vc, "paused", False))
+                    else:
+                        busy = bool(vc.is_playing() or vc.is_paused())
+                    if busy:
+                        self._idle_since.pop(gid, None)
+                        continue
+                    since = self._idle_since.get(gid)
+                    if since is None:
+                        self._idle_since[gid] = now
+                        continue
+                    if (now - since) >= IDLE_DISCONNECT_SEC and not self.stay_247.get(gid):
+                        ch = self._text_channel.get(gid)
+                        self._cleanup_guild(gid)
+                        try:
+                            await vc.disconnect(force=True)
+                        except Exception:
+                            pass
+                        if ch is not None:
+                            try:
+                                await ch.send("🔌 خرجت من القناة بسبب عدم وجود تشغيل لفترة طويلة.")
+                            except Exception:
+                                pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.warning(f"idle monitor error: {e!r}")
+
+    def _cleanup_guild(self, gid: int):
+        self._queue_of(gid).clear()
+        self._cancel_np_task(gid)
+        self._np_msgs.pop(gid, None)
+        self._idle_since.pop(gid, None)
+        self._rescued.pop(gid, None)
+        self._ff_state.pop(gid, None)
+
+    # ─────────────────────────────────────────
+    #  محرك الاحتياط: yt-dlp + ffmpeg (عند تعذر Lavalink)
+    # ─────────────────────────────────────────
+
+    def _ff_state_of(self, gid: int) -> dict:
+        return self._ff_state.setdefault(gid, {
+            "queue": [], "current": None, "volume": 1.0,
+            "played": 0.0, "last_tick": None,
+        })
+
+    def _ff_elapsed(self, gid: int) -> float:
+        st = self._ff_state.get(gid)
+        if not st or st.get("current") is None:
+            return 0.0
+        now = time.monotonic()
+        last = st.get("last_tick") or now
+        vc = self.bot.get_guild(gid).voice_client if self.bot.get_guild(gid) else None
+        if vc is not None and vc.is_playing():
+            st["played"] += now - last
+        st["last_tick"] = now
+        return float(st.get("played") or 0.0)
+
+    async def _ff_play_resolved(self, ctx, info: dict):
+        gid = ctx.guild.id
+        self._text_channel[gid] = ctx.channel
+        self._rescued[gid] = set()
+        vc = ctx.guild.voice_client
+        if vc is None:
+            vc = await self._ensure_voice(ctx)
+            if vc is None:
+                return
+        st = self._ff_state_of(gid)
+        if vc.is_playing() or vc.is_paused():
+            st["queue"].append(info)
+            await ctx.reply(f"➕ أُضيفت إلى الطابور: **{info.get('title')}**", mention_author=False)
+            return
+        await self._ff_start(ctx.guild, vc, info)
+        await ctx.reply(f"🎶 جاري تشغيل: **{info.get('title')}**", mention_author=False)
+
+    async def _ff_start(self, guild: discord.Guild, vc: discord.VoiceClient, info: dict):
+        gid = guild.id
+        st = self._ff_state_of(gid)
+        before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 20000000"
+        src = discord.PCMVolumeTransformer(
+            discord.FFmpegPCMAudio(info["url"], before_options=before, options="-vn"),
+            volume=float(st.get("volume") or 1.0),
+        )
+
+        def _after(err):
+            if err:
+                log.error(f"ffmpeg after error: {err!r}")
+            self.bot.dispatch("ff_track_end", gid, "finished" if err is None else "error")
+
+        vc.play(src, after=_after)
+        st["current"] = info
+        st["played"] = 0.0
+        st["last_tick"] = time.monotonic()
+        self._idle_since.pop(gid, None)
+        self._cancel_np_task(gid)
+        await self._ff_np_message(gid, vc, info)
+        await self._insert_history(gid, info.get("title") or "", info.get("webpage_url") or "", "youtube")
+
+    @commands.Cog.listener()
+    async def on_ff_track_end(self, gid: int, status: str):
+        try:
+            guild = self.bot.get_guild(gid)
+            if guild is None:
+                return
+            self._cancel_np_task(gid)
+            st = self._ff_state.get(gid)
+            if st is None:
+                return
+            finished = st.get("current")
+            st["current"] = None
+            vc = guild.voice_client
+            if vc is None:
+                self._idle_since[gid] = time.monotonic()
+                return
+            mode = self.loop_mode.get(gid, "off")
+            q = st["queue"]
+
+            if status == "finished" and finished is not None:
+                if mode == "track":
+                    await self._ff_start(guild, vc, finished)
+                    return
+                if mode == "queue":
+                    q.append(finished)
+
+            if q:
+                nxt = q.pop(0)
+                await self._ff_start(guild, vc, nxt)
+                return
+
+            self._idle_since[gid] = time.monotonic()
+            if status == "error":
+                ch = self._text_channel.get(gid)
+                if ch is not None:
+                    try:
+                        await ch.send("⛔ انقطع البث ولم يعد هناك ما يُشغّله.")
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.error(f"ff_track_end handler error: {e!r}")
+
+
+    # ─────────────────────────────────────────
+    #  الأوامر
+    # ─────────────────────────────────────────
+
+    @commands.command(name="queue", aliases=["q"], help="عرض قائمة الانتظار")
+    async def queue_(self, ctx):
+        gid = ctx.guild.id
+        vc = ctx.guild.voice_client
+        current = None
+        if isinstance(vc, wavelink.Player):
+            current = vc.current
+        elif ENGINE == "ffmpeg":
+            st = self._ff_state.get(gid)
+            current = st.get("current") if st else None
+        q = self._queue_of(gid)
+        if current is None and not q:
+            await ctx.reply("📜 الطابور فارغ — أرسل `play اسم الأغنية` للبدء.", mention_author=False)
             return
         lines = []
-        for index, item in enumerate(items[:10], start=1):
-            info = item["data"].get("info", {})
-            title = info.get("title", "unknown")
-            uri = info.get("uri")
-            if uri:
-                lines.append(f"`{index}.` [{title}]({uri})")
-            else:
-                lines.append(f"`{index}.` {title}")
-        embed = discord.Embed(title=f"Playlist: {name}",
-                              description="\n".join(lines), color=0x5865F2)
-        if len(items) > 10:
-            embed.set_footer(text=f"...and {len(items) - 10} more tracks.")
-        await ctx.send(embed=embed)
-
-    # ================================================================== help
-    @commands.hybrid_command(name="help", description="Show all commands.")
-    async def help_command(self, ctx: commands.Context):
-        prefix = self.cfg.PREFIX
+        if current is not None:
+            title = getattr(current, "title", None) or current.get("title", "")
+            dur = getattr(current, "length", None) or (current.get("duration") or 0) * 1000
+            lines.append(f"**▶ الآن:** {title} `{fmt_time(int(dur or 0))}`")
+        if q:
+            lines.append("")
+            for i, t in enumerate(q[:10], start=1):
+                title = getattr(t, "title", None) or (t.get("title") if isinstance(t, dict) else str(t))
+                dur = getattr(t, "length", None)
+                if dur is None:
+                    dur = (t.get("duration") or 0) * 1000 if isinstance(t, dict) else 0
+                lines.append(f"**{i}.** {title} `{fmt_time(int(dur or 0))}`")
+            if len(q) > 10:
+                lines.append(f"…و {len(q) - 10} أخرى")
+        total = sum(
+            int(getattr(t, "length", 0) or ((t.get("duration") or 0) * 1000 if isinstance(t, dict) else 0))
+            for t in q
+        )
         embed = discord.Embed(
-            title="Music Bot - Commands",
-            description=("Every command works as a **slash command** (`/play`) "
-                         f"and with the **prefix** (`{prefix}play`)."),
-            color=0x5865F2,
+            title=f"📜 قائمة الانتظار ({len(q)}) — المدة الكلية {fmt_time(total)}",
+            description="\n".join(lines) or "فارغ",
+            color=discord.Color.blurple(),
         )
-        embed.add_field(
-            name="Playback",
-            value=("`play (p)` - play a song/URL\n"
-                   "`search` - search with buttons\n"
-                   "`pause` / `resume` - pause & resume\n"
-                   "`skip (s)` - skip track\n"
-                   "`stop` - stop & disconnect\n"
-                   "`join` - join your channel\n"
-                   "`replay` - restart track"),
-            inline=False,
-        )
-        embed.add_field(
-            name="Queue",
-            value=("`queue (q)` - show queue\n"
-                   "`nowplaying (np)` - current track\n"
-                   "`loop off|track|queue`\n"
-                   "`shuffle` / `clear`\n"
-                   "`remove <pos>` / `skipto <pos>`\n"
-                   "`seek <time>` / `history`"),
-            inline=False,
-        )
-        embed.add_field(
-            name="Other",
-            value=("`volume <0-150>`\n"
-                   "`playlist create|add|load|list|info|delete`\n"
-                   "`help` - this message"),
-            inline=False,
-        )
-        embed.set_footer(text=f"Volume is saved per server. Auto-leave after "
-                              f"{self.cfg.AUTO_DISCONNECT_SECONDS}s of inactivity.")
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed, mention_author=False)
 
-
-def parse_time(text: str) -> "Optional[int]":
-    """Parse '90', '1:30' or '1:02:05' into seconds."""
-    text = text.strip()
-    if not re.fullmatch(r"[\d:]+", text):
-        return None
-    parts = [int(p) for p in text.split(":")]
-    if len(parts) > 3 or any(p < 0 for p in parts):
-        return None
-    seconds = 0
-    for part in parts:
-        seconds = seconds * 60 + part
-    return seconds
-
-
-async def setup(bot):
-    await bot.add_cog(MusicCog(bot))
-ZEOF_MUSIC_PY
-COPY <<'ZEOF_VIEWS_PY' /app/views.py
-"""
-Interactive UI components:
-
-  - NowPlayingView : persistent control buttons attached to the "Now playing" embed
-  - SearchView     : pick one of the top-5 search results with buttons
-"""
-
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Callable, Optional
-
-import discord
-import wavelink
-
-if TYPE_CHECKING:
-    from main import MusicBot
-
-
-def build_now_playing_embed(player: wavelink.Player) -> discord.Embed:
-    """Build (or refresh) the Now Playing embed from the player state."""
-    track: "Optional[wavelink.Playable]" = player.current
-    if track is None:
-        embed = discord.Embed(
-            title="Nothing playing",
-            description="The queue is empty. Use `/play` or `?play` to add music!",
-            color=0xED4245,
-        )
-        return embed
-
-    mode = player.queue.mode
-    loop_text = {wavelink.QueueMode.normal: "Off",
-                 wavelink.QueueMode.loop: "Track",
-                 wavelink.QueueMode.loop_all: "Queue"}[mode]
-
-    embed = discord.Embed(
-        title="Now playing",
-        description=f"**[{track.title}]({track.uri})**",
-        color=0x5865F2,
-    )
-    if track.artwork:
-        embed.set_thumbnail(url=track.artwork)
-    embed.add_field(name="Author", value=track.author or "Unknown", inline=True)
-    embed.add_field(name="Source", value=str(track.source).split(".")[-1].capitalize(), inline=True)
-    remaining = max(track.length - player.position, 0)
-    embed.add_field(
-        name="Time",
-        value=f"{format_time(player.position)} / {format_time(track.length)} "
-              f"({format_time(remaining)} left)",
-        inline=False,
-    )
-    embed.add_field(name="Volume", value=f"{player.volume}%", inline=True)
-    embed.add_field(name="Loop", value=loop_text, inline=True)
-    embed.add_field(name="In queue", value=str(player.queue.count), inline=True)
-    if player.paused:
-        embed.set_footer(text="Paused")
-    return embed
-
-
-def format_time(ms: int) -> str:
-    seconds = int(ms / 1000)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    if hours:
-        return f"{hours}:{minutes:02}:{seconds:02}"
-    return f"{minutes}:{seconds:02}"
-
-
-def same_voice(itx: discord.Interaction, player: wavelink.Player) -> bool:
-    """The user must share a voice channel with the bot to use the buttons."""
-    if player.channel is None or itx.user is None:
-        return False
-    voice = itx.user.voice
-    if voice is None or voice.channel is None:
-        return False
-    return voice.channel.id == player.channel.id
-
-
-class NowPlayingView(discord.ui.View):
-    """Persistent playback controls attached to the Now Playing message."""
-
-    def __init__(self, bot: "MusicBot"):
-        super().__init__(timeout=None)
-        self.bot = bot
-
-    async def _get_player(self, itx: discord.Interaction) -> "Optional[wavelink.Player]":
-        if itx.guild is None or itx.guild.voice_client is None:
-            await itx.response.send_message(
-                "I am not connected to a voice channel right now.", ephemeral=True)
-            return None
-        player = itx.guild.voice_client
-        if not isinstance(player, wavelink.Player):
-            await itx.response.send_message("No active player.", ephemeral=True)
-            return None
-        if not same_voice(itx, player):
-            await itx.response.send_message(
-                "Join my voice channel first to use the controls.", ephemeral=True)
-            return None
-        return player
-
-    # ---- play / pause -------------------------------------------------
-    @discord.ui.button(emoji="\u23F8", label="Pause",
-                       style=discord.ButtonStyle.primary, custom_id="np:playpause")
-    async def playpause(self, itx: discord.Interaction,
-                        button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
+    @commands.command(name="nowplaying", aliases=["np"], help="عرض ما يُشغّل الآن مع شريط التقدم")
+    async def nowplaying(self, ctx):
+        gid = ctx.guild.id
+        vc = ctx.guild.voice_client
+        if isinstance(vc, wavelink.Player) and vc.current:
+            embed = self._np_embed(gid, int(vc.position or 0), int(vc.current.length or 0),
+                                   vc.current.title or "", vc.current.author or "", vc.current.uri or "")
+            await ctx.reply(embed=embed, mention_author=False)
             return
-        if player.current is None:
-            await itx.response.send_message("Nothing is playing.", ephemeral=True)
+        st = self._ff_state.get(gid)
+        if ENGINE == "ffmpeg" and st and st.get("current"):
+            cur = st["current"]
+            embed = self._np_embed(gid, int(self._ff_elapsed(gid) * 1000),
+                                   int(cur.get("duration") or 0) * 1000,
+                                   cur.get("title") or "", cur.get("uploader") or "",
+                                   cur.get("webpage_url") or "")
+            await ctx.reply(embed=embed, mention_author=False)
             return
-        await player.pause(not player.paused)
-        button.emoji = "\u25B6" if player.paused else "\u23F8"
-        button.label = "Resume" if player.paused else "Pause"
-        await itx.response.edit_message(embed=build_now_playing_embed(player), view=self)
+        await ctx.reply("😴 لا يوجد شيء قيد التشغيل الآن.", mention_author=False)
 
-    # ---- skip ---------------------------------------------------------
-    @discord.ui.button(emoji="\u23ED", label="Skip",
-                       style=discord.ButtonStyle.primary, custom_id="np:skip")
-    async def skip(self, itx: discord.Interaction, button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
+    @commands.command(name="skip", aliases=["s", "next"], help="تخطي الأغنية الحالية")
+    async def skip(self, ctx):
+        gid = ctx.guild.id
+        vc = ctx.guild.voice_client
+        if vc is None:
+            await ctx.reply("😕 لست متصلاً بقناة صوتية.", mention_author=False)
             return
-        if player.current is None:
-            await itx.response.send_message("Nothing to skip.", ephemeral=True)
-            return
-        await itx.response.defer()
-        await player.skip(force=True)
-
-    # ---- stop ---------------------------------------------------------
-    @discord.ui.button(emoji="\u23F9", label="Stop",
-                       style=discord.ButtonStyle.danger, custom_id="np:stop")
-    async def stop(self, itx: discord.Interaction, button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
-            return
-        await itx.response.defer()
-        await self.bot.music.teardown(player, announce_to=itx.channel)
-
-    # ---- loop ---------------------------------------------------------
-    @discord.ui.button(emoji="\U0001F501", label="Loop: Off",
-                       style=discord.ButtonStyle.secondary, custom_id="np:loop")
-    async def loop(self, itx: discord.Interaction, button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
-            return
-        cycle = {wavelink.QueueMode.normal: wavelink.QueueMode.loop,
-                 wavelink.QueueMode.loop: wavelink.QueueMode.loop_all,
-                 wavelink.QueueMode.loop_all: wavelink.QueueMode.normal}
-        player.queue.mode = cycle[player.queue.mode]
-        labels = {wavelink.QueueMode.normal: "Loop: Off",
-                  wavelink.QueueMode.loop: "Loop: Track",
-                  wavelink.QueueMode.loop_all: "Loop: Queue"}
-        button.label = labels[player.queue.mode]
-        await itx.response.edit_message(embed=build_now_playing_embed(player), view=self)
-
-    # ---- shuffle ------------------------------------------------------
-    @discord.ui.button(emoji="\U0001F500", label="Shuffle",
-                       style=discord.ButtonStyle.secondary, custom_id="np:shuffle")
-    async def shuffle(self, itx: discord.Interaction, button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
-            return
-        if player.queue.count < 2:
-            await itx.response.send_message(
-                "Need at least 2 tracks in the queue to shuffle.", ephemeral=True)
-            return
-        player.queue.shuffle()
-        await itx.response.edit_message(embed=build_now_playing_embed(player), view=self)
-
-    # ---- volume -------------------------------------------------------
-    @discord.ui.button(emoji="\U0001F509", label="-10",
-                       style=discord.ButtonStyle.secondary, custom_id="np:volupdn")
-    async def volume_down(self, itx: discord.Interaction, button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
-            return
-        new_volume = max(0, player.volume - 10)
-        await player.set_volume(new_volume)
-        await self.bot.music.persist_volume(itx.guild, new_volume)
-        await itx.response.edit_message(embed=build_now_playing_embed(player), view=self)
-
-    @discord.ui.button(emoji="\U0001F50A", label="+10",
-                       style=discord.ButtonStyle.secondary, custom_id="np:volup")
-    async def volume_up(self, itx: discord.Interaction, button: discord.ui.Button):
-        player = await self._get_player(itx)
-        if player is None:
-            return
-        new_volume = min(self.bot.cfg.MAX_VOLUME, player.volume + 10)
-        await player.set_volume(new_volume)
-        await self.bot.music.persist_volume(itx.guild, new_volume)
-        await itx.response.edit_message(embed=build_now_playing_embed(player), view=self)
-
-
-class SearchView(discord.ui.View):
-    """Buttons to pick one of up to 5 search results."""
-
-    def __init__(self, requester: discord.abc.User,
-                 on_pick: "Callable[[discord.Interaction, wavelink.Playable], None]"):
-        super().__init__(timeout=120)
-        self.requester = requester
-        self.on_pick = on_pick
-        self.message: "Optional[discord.Message]" = None
-        self.tracks: "list[wavelink.Playable]" = []
-
-    async def interaction_check(self, itx: discord.Interaction) -> bool:
-        if itx.user.id != self.requester.id:
-            await itx.response.send_message(
-                "Only the person who ran the search can choose.", ephemeral=True)
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        if self.message is not None:
-            try:
-                await self.message.edit(content="Search timed out.", view=None)
-            except discord.HTTPException:
-                pass
-
-    def build_buttons(self, tracks: "list[wavelink.Playable]") -> None:
-        self.tracks = list(tracks[:5])
-        for index, track in enumerate(self.tracks):
-            button = discord.ui.Button(
-                label=str(index + 1),
-                style=discord.ButtonStyle.primary,
-                custom_id=f"search:{index}",
-            )
-            button.callback = self._make_callback(index)
-            self.add_item(button)
-        cancel = discord.ui.Button(label="Cancel",
-                                   style=discord.ButtonStyle.danger,
-                                   custom_id="search:cancel")
-        cancel.callback = self._cancel_callback
-        self.add_item(cancel)
-
-    def _make_callback(self, index: int):
-        async def callback(itx: discord.Interaction):
-            await itx.response.defer()
-            track = self.tracks[index]
-            for child in self.children:
-                child.disabled = True  # type: ignore[attr-defined]
-            try:
-                await self.message.edit(view=self)
-            except discord.HTTPException:
-                pass
-            await self.on_pick(itx, track)
-        return callback
-
-    def _cancel_callback(self):
-        async def callback(itx: discord.Interaction):
-            await itx.response.edit_message(content="Search cancelled.", view=None)
-        return callback
-ZEOF_VIEWS_PY
-COPY <<'ZEOF_AUTO_TEST_PY' /app/Scripts/auto_test.py
-"""
-Automated end-to-end test for the music bot.
-
-Runs when AUTOTEST=1 is set. Sequence:
-  1. Find a guild the bot is in and join a voice channel.
-  2. Search a track on SoundCloud and play it.
-  3. Verify REAL playback: track start event + audio position advancing
-     + voice UDP ping (this proves audio is being streamed to Discord).
-  4. Test pause / resume / seek / volume / queue / skip.
-  5. Try a YouTube search too (reported separately, datacenter IPs are
-     sometimes rate-limited by YouTube - SoundCloud result is decisive).
-  6. Optional (RECOVERY_TEST=1): kill-and-restart Lavalink mid-playback and
-     verify the bot automatically rebuilds the player and keeps streaming
-     - this simulates the "Lavalink server died" scenario end to end.
-  7. Disconnect, write e2e_result.json and exit(0/1).
-
-Run standalone:  AUTOTEST=1 DISCORD_TOKEN=... python main.py
-"""
-
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import os
-import time
-from typing import Optional
-
-import discord
-import wavelink
-
-log = logging.getLogger("musicbot.autotest")
-
-RESULT_PATH = os.environ.get("E2E_RESULT_PATH", "e2e_result.json")
-
-
-class Step:
-    def __init__(self, name: str):
-        self.name = name
-        self.ok = False
-        self.detail = ""
-
-
-class AutoTest:
-    def __init__(self, bot):
-        self.bot = bot
-        self.steps: "list[Step]" = []
-        self.player: "Optional[wavelink.Player]" = None
-        self.guild: "Optional[discord.Guild]" = None
-
-    def step(self, name: str, ok: bool, detail: str = "") -> None:
-        self.steps.append(Step(name))
-        self.steps[-1].ok = ok
-        self.steps[-1].detail = detail
-        status = "OK " if ok else "FAIL"
-        log.info("E2E: [%s] %s %s", status, name, ("- " + detail) if detail else "")
-
-    # ------------------------------------------------------------- helpers
-    async def wait_for_track(self, timeout: float = 20.0) -> "Optional[wavelink.Playable]":
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            player = self.player
-            if player is not None and player.current is not None:
-                return player.current
-            await asyncio.sleep(0.5)
-        return None
-
-    async def wait_for_position(self, minimum_ms: int, timeout: float = 45.0) -> int:
-        """Wait until the player reports a playback position >= minimum_ms."""
-        deadline = time.monotonic() + timeout
-        max_seen = 0
-        while time.monotonic() < deadline:
-            player = self.player
-            if player is not None:
-                position = player.position
-                max_seen = max(max_seen, position)
-                if position >= minimum_ms:
-                    return position
-            await asyncio.sleep(1.0)
-        return max_seen
-
-    async def wait_for_current_change(self, old_identifier: str,
-                                      timeout: float = 25.0) -> "Optional[wavelink.Playable]":
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            player = self.player
-            if player is not None and player.current is not None \
-                    and player.current.identifier != old_identifier:
-                return player.current
-            await asyncio.sleep(0.5)
-        return None
-
-    # ---------------------------------------------------------------- main
-    async def run(self) -> bool:
-        log.info("E2E: starting end-to-end test")
-
-        await asyncio.sleep(3)  # let caches/voice states settle
-
-        # ---- Step 1: guild ------------------------------------------
-        guild = self._pick_guild()
-        if guild is None:
-            client_id = str(getattr(self.bot.user, "id", ""))
-            self.step("guild_available", False, "bot is not in any server")
-            log.info("E2E: invite the bot with this link, then re-run the test: "
-                     "https://discord.com/oauth2/authorize?client_id=%s&scope=bot"
-                     "%%20applications.commands&permissions=20007936", client_id)
-            return False
-        self.step("guild_available", True, f"{guild.name} ({guild.id})")
-        self.guild = guild
-
-        # ---- Step 2: voice connection -------------------------------
-        channel = self._pick_voice_channel(guild)
-        if channel is None:
-            self.step("voice_connect", False, "no accessible voice channel")
-            return False
-        try:
-            self.player = await channel.connect(cls=wavelink.Player,
-                                                self_deaf=True, timeout=20.0)
-        except Exception as error:
-            self.step("voice_connect", False, repr(error))
-            return False
-        self.step("voice_connect", True,
-                  f"joined '{channel.name}' (websocket+UDP handshake done)")
-
-        try:
-            ok = await self._playback_tests(guild)
-        finally:
-            await self._cleanup()
-
-        return ok
-
-    # ------------------------------------------------------- playback tests
-    async def _playback_tests(self, guild: discord.Guild) -> bool:
-        all_ok = True
-
-        # ---- Step 3: search & play (SoundCloud = datacenter-friendly) --
-        try:
-            results = await wavelink.Playable.search(
-                "Never Gonna Give You Up",
-                source=wavelink.TrackSource.SoundCloud)
-            tracks = list(results or [])
-        except Exception as error:
-            self.step("search_soundcloud", False, repr(error))
-            return False
-        self.step("search_soundcloud", bool(tracks),
-                  f"{len(tracks)} results" if tracks else "no results")
-        if not tracks:
-            return False
-
-        track = tracks[0]
-        self.player.queue.put(track)
-        await self.player.play(self.player.queue.get())
-
-        started = await self.wait_for_track()
-        self.step("track_start_event", started is not None,
-                  f"now playing: {started.title} [{started.source}]"
-                  if started else "no track within 20s")
-        if started is None:
-            return False
-        all_ok &= started is not None
-
-        # ---- Step 4: REAL streaming proof (position advances + ping) ---
-        position = await self.wait_for_position(minimum_ms=8000, timeout=40.0)
-        ping = self.player.ping
-        streaming = position >= 8000
-        self.step("audio_streaming", streaming,
-                  f"position reached {position}ms (>=8000ms required), "
-                  f"voice UDP ping={ping}ms")
-        all_ok &= streaming
-
-        # ---- Step 5: pause / resume ------------------------------------
-        await self.player.pause(True)
-        await asyncio.sleep(1.5)
-        paused_ok = self.player.paused
-        pos_paused = self.player.position
-        await asyncio.sleep(2.0)
-        frozen = abs(self.player.position - pos_paused) < 1500
-        await self.player.pause(False)
-        await asyncio.sleep(1.0)
-        resumed_ok = not self.player.paused
-        self.step("pause_resume", paused_ok and frozen and resumed_ok,
-                  f"paused={paused_ok}, position frozen={frozen}, resumed={resumed_ok}")
-        all_ok &= paused_ok and frozen and resumed_ok
-
-        # ---- Step 6: seek -----------------------------------------------
-        if self.player.current.is_seekable:
-            await self.player.seek(15000)
-            await asyncio.sleep(2.5)
-            position = self.player.position
-            seek_ok = 11000 <= position <= 25000
-            self.step("seek", seek_ok, f"position after seek(15s) = {position}ms")
-        else:
-            self.step("seek", True, "track is a live stream - skipped")
-        all_ok &= self.steps[-1].ok
-
-        # ---- Step 7: volume ----------------------------------------------
-        await self.player.set_volume(80)
-        await asyncio.sleep(0.5)
-        volume_ok = self.player.volume == 80
-        self.step("volume", volume_ok, f"player.volume={self.player.volume}")
-        all_ok &= volume_ok
-
-        # ---- Step 8: queue + skip ------------------------------------------
-        try:
-            results2 = await wavelink.Playable.search(
-                "Never Gonna Give You Up remix",
-                source=wavelink.TrackSource.SoundCloud)
-            tracks2 = list(results2 or [])
-        except Exception:
-            tracks2 = []
-        if tracks2:
-            second = tracks2[0]
-            self.player.queue.put(second)
-            old_id = self.player.current.identifier
-            next_track = self.player.queue.get()
-            await self.player.play(next_track)
-            changed = await self.wait_for_current_change(old_id)
-            self.step("queue_skip", changed is not None,
-                      f"now playing: {changed.title}" if changed else "track did not change")
-        else:
-            self.step("queue_skip", False, "could not load a second track")
-        all_ok &= self.steps[-1].ok
-
-        # ---- Step 9: YouTube search (non-fatal, often IP-limited) --------
-        try:
-            results3 = await wavelink.Playable.search(
-                "lofi hip hop", source=wavelink.TrackSource.YouTube)
-            tracks3 = list(results3 or [])
-            self.step("search_youtube", bool(tracks3),
-                      f"{len(tracks3)} results - YouTube source working"
-                      if tracks3 else "YouTube returned nothing "
-                      "(datacenter IPs are often limited; works on home IPs "
-                      "or with cookies/POT config)")
-        except Exception as error:
-            self.step("search_youtube", False,
-                      f"error: {error!r:.120} - may need cookies/POT on this IP")
-        # YouTube failures do not fail the whole test (source-dependent).
-
-        # ---- Step 10 (optional): Lavalink kill & auto-recovery ----------
-        if os.environ.get("RECOVERY_TEST") == "1":
-            all_ok &= await self._recovery_test()
-
-        return all_ok
-
-    async def _recovery_test(self) -> bool:
-        """Simulate a Lavalink crash + restart and verify audio recovers.
-
-        The bash harness writes RECOVERY_MARKER; as soon as it appears the
-        harness kills Lavalink, waits longer than the 60s session-resume
-        window (so resuming is impossible) and starts it again. The bot must
-        detect the fresh session, rebuild the voice player automatically and
-        continue broadcasting audio.
-        """
-        before = self.player.current if self.player else None
-        if before is None:
-            self.step("recovery_setup", False, "no track is playing")
-            return False
-
-        marker = os.environ.get("RECOVERY_MARKER", "")
-        if marker:
-            try:
-                with open(marker, "w", encoding="utf-8") as handle:
-                    handle.write(str(self.player.position))
-            except OSError:
-                pass
-        log.info("E2E: recovery marker written (%s at %sms) - waiting for "
-                 "Lavalink kill + restart...", before.title,
-                 self.player.position)
-
-        # Phase 1: the node drops ---------------------------------------
-        deadline = time.monotonic() + 90
-        dropped = False
-        while time.monotonic() < deadline and not dropped:
-            nodes = list(wavelink.Pool.nodes.values())
-            dropped = (not nodes) or all(
-                node.status != wavelink.NodeStatus.CONNECTED
-                for node in nodes)
-            if not dropped:
-                await asyncio.sleep(1)
-        if not dropped:
-            self.step("lavalink_kill", False,
-                      "node never dropped within 90s (was Lavalink killed?")
-            return False
-        self.step("lavalink_kill", True, "node connection lost as expected")
-
-        # Phase 2: the node comes back -----------------------------------
-        deadline = time.monotonic() + 240
-        back = False
-        while time.monotonic() < deadline and not back:
-            nodes = list(wavelink.Pool.nodes.values())
-            back = any(node.status == wavelink.NodeStatus.CONNECTED
-                       for node in nodes)
-            if not back:
-                await asyncio.sleep(2)
-        if not back:
-            self.step("lavalink_restart", False,
-                      "node never came back within 240s")
-            return False
-        self.step("lavalink_restart", True, "node CONNECTED again")
-
-        # Phase 3: the bot must stream again -----------------------------
-        deadline = time.monotonic() + 120
-        recovered = False
-        detail = "no playing player within the recovery window"
-        while time.monotonic() < deadline and not recovered:
-            voice_client = self.guild.voice_client if self.guild else None
-            if isinstance(voice_client, wavelink.Player) \
-                    and voice_client.current is not None:
-                position_before = voice_client.position
-                await asyncio.sleep(3)
-                voice_client = (self.guild.voice_client
-                                if self.guild else None)
-                if isinstance(voice_client, wavelink.Player) \
-                        and voice_client.position > position_before:
-                    recovered = True
-                    same_track = (voice_client.current.identifier
-                                  == before.identifier)
-                    detail = (f"streaming again: {voice_client.current.title} "
-                              f"(same track={same_track}, "
-                              f"position={voice_client.position}ms, "
-                              f"ping={voice_client.ping}ms)")
-                    self.player = voice_client
+        if isinstance(vc, wavelink.Player):
+            if not (getattr(vc, "playing", False) or getattr(vc, "paused", False)):
+                await ctx.reply("😕 لا يوجد تشغيل حالياً.", mention_author=False)
+                return
+            q = self._queue_of(gid)
+            nxt = q.pop(0) if q else None
+            if nxt is not None:
+                try:
+                    vc.autoplay = wavelink.AutoPlayMode.disabled
+                    await vc.play(nxt)
+                    await ctx.reply(f"⏭ تم التخطي إلى: **{nxt.title}**", mention_author=False)
+                except Exception as e:
+                    await ctx.reply(f"❌ فشل التخطي: `{e}`", mention_author=False)
             else:
-                await asyncio.sleep(2)
-        self.step("playback_recovered", recovered, detail)
-        return recovered
+                await vc.stop()
+                await ctx.reply("⏭ تم التخطي — لا يوجد المزيد في الطابور.", mention_author=False)
+            return
+        # وضع ffmpeg
+        if not (vc.is_playing() or vc.is_paused()):
+            await ctx.reply("😕 لا يوجد تشغيل حالياً.", mention_author=False)
+            return
+        await ctx.reply("⏭ تم التخطي.", mention_author=False)
+        vc.stop()
 
-    # ------------------------------------------------------------ utilities
-    def _pick_guild(self) -> "Optional[discord.Guild]":
-        for guild in self.bot.guilds:
-            if guild.me is not None and guild.me.guild_permissions.connect:
-                return guild
-        return self.bot.guilds[0] if self.bot.guilds else None
+    @commands.command(name="pause", help="إيقاف مؤقت")
+    async def pause(self, ctx):
+        vc = ctx.guild.voice_client
+        if isinstance(vc, wavelink.Player):
+            if getattr(vc, "playing", False) and not getattr(vc, "paused", False):
+                await vc.pause(True)
+                await ctx.reply("⏸️ تم الإيقاف المؤقت.", mention_author=False)
+                return
+        elif vc and vc.is_playing() and not vc.is_paused():
+            vc.pause()
+            await ctx.reply("⏸️ تم الإيقاف المؤقت.", mention_author=False)
+            return
+        await ctx.reply("😕 لا يوجد تشغيل لإيقافه.", mention_author=False)
 
-    def _pick_voice_channel(self, guild: discord.Guild) -> "Optional[discord.abc.Connectable]":
-        wanted = os.environ.get("TEST_VOICE_CHANNEL", "")
-        channels = [c for c in guild.voice_channels + guild.stage_channels]
-        if wanted:
-            for channel in channels:
-                if channel.name.lower() == wanted.lower() or str(channel.id) == wanted:
-                    return channel
-        for channel in channels:
-            perms = channel.permissions_for(guild.me)
-            if perms.connect and perms.speak:
-                return channel
-        return channels[0] if channels else None
+    @commands.command(name="resume", aliases=["unpause"], help="استئناف التشغيل")
+    async def resume(self, ctx):
+        vc = ctx.guild.voice_client
+        if isinstance(vc, wavelink.Player):
+            if getattr(vc, "paused", False):
+                await vc.pause(False)
+                await ctx.reply("▶️ تم استئناف التشغيل.", mention_author=False)
+                return
+        elif vc and vc.is_paused():
+            vc.resume()
+            await ctx.reply("▶️ تم استئناف التشغيل.", mention_author=False)
+            return
+        await ctx.reply("😕 لا يوجد إيقاف مؤقت.", mention_author=False)
 
-    async def _cleanup(self) -> None:
-        player = None
-        if self.guild is not None \
-                and isinstance(self.guild.voice_client, wavelink.Player):
-            player = self.guild.voice_client
-        if player is None and self.player is not None:
-            player = self.player
-        if player is not None:
+    @commands.command(name="stop", aliases=["st"], help="إيقاف التشغيل ومسح الطابور")
+    async def stop_(self, ctx):
+        gid = ctx.guild.id
+        vc = ctx.guild.voice_client
+        self._queue_of(gid).clear()
+        self._rescued.pop(gid, None)
+        self._cancel_np_task(gid)
+        if isinstance(vc, wavelink.Player):
+            if getattr(vc, "playing", False) or getattr(vc, "paused", False):
+                await vc.stop()
+            await ctx.reply("⏹ تم الإيقاف ومسح الطابور.", mention_author=False)
+            self._idle_since[gid] = time.monotonic()
+            return
+        if vc and (vc.is_playing() or vc.is_paused()):
+            if ENGINE == "ffmpeg":
+                st = self._ff_state.get(gid)
+                if st is not None:
+                    st["current"] = None
+            vc.stop()
+        await ctx.reply("⏹ تم الإيقاف ومسح الطابور.", mention_author=False)
+        self._idle_since[gid] = time.monotonic()
+
+    @commands.command(name="volume", aliases=["vol", "v"], help="ضبط الصوت (0-200)")
+    async def volume(self, ctx, value: int = None):
+        gid = ctx.guild.id
+        if value is None:
+            await ctx.reply(f"🔊 الصوت الحالي: `{self._current_volume(ctx.guild)}%`", mention_author=False)
+            return
+        value = max(0, min(value, 200))
+        vc = ctx.guild.voice_client
+        if isinstance(vc, wavelink.Player):
             try:
-                await player.disconnect()
+                await vc.set_volume(value)
             except Exception:
-                pass
+                try:
+                    vc.volume = value
+                except Exception:
+                    pass
+        elif vc and isinstance(vc.source, discord.PCMVolumeTransformer):
+            vc.source.volume = value / 100.0
+            st = self._ff_state_of(gid)
+            st["volume"] = value / 100.0
+        else:
+            await ctx.reply("😕 لست متصلاً بقناة صوتية.", mention_author=False)
+            return
+        self._save_settings(gid)
+        await ctx.reply(f"🔊 تم ضبط الصوت إلى `{value}%`", mention_author=False)
 
-    def report(self) -> bool:
-        passed = sum(1 for s in self.steps if s.ok)
-        total = len(self.steps)
-        all_ok = all(s.ok for s in self.steps)
-        log.info("E2E: %s/%s steps passed -> %s", passed, total,
-                 "PASS" if all_ok else "FAIL")
-        for step in self.steps:
-            log.info("E2E:   %-22s %s %s", step.name,
-                     "OK " if step.ok else "FAIL", step.detail)
-        return all_ok
+    @commands.command(name="loop", aliases=["repeat", "l"], help="التكرار: off / track / queue")
+    async def loop(self, ctx, mode: str = None):
+        gid = ctx.guild.id
+        if mode is None:
+            await ctx.reply(
+                f"🔁 وضع التكرار الحالي: `{self.loop_mode.get(gid, 'off')}`\n"
+                f"الاستخدام: `{PREFIX}loop off|track|queue`",
+                mention_author=False,
+            )
+            return
+        mode = mode.strip().lower()
+        if mode in ("one", "single", "اغنية", "track", "t", "1"):
+            mode = "track"
+        elif mode in ("all", "queue", "q", "الكل"):
+            mode = "queue"
+        elif mode in ("off", "none", "ايقاف", "إيقاف"):
+            mode = "off"
+        else:
+            await ctx.reply(f"❌ وضع غير معروف — الاستخدام: `{PREFIX}loop off|track|queue`", mention_author=False)
+            return
+        self.loop_mode[gid] = mode
+        self._save_settings(gid)
+        emoji = {"off": "➡️", "track": "🔂", "queue": "🔁"}[mode]
+        await ctx.reply(f"{emoji} وضع التكرار: `{mode}`", mention_author=False)
+
+    @commands.command(name="shuffle", aliases=["sh"], help="خلط الطابور")
+    async def shuffle(self, ctx):
+        gid = ctx.guild.id
+        q = self._queue_of(gid)
+        if len(q) < 2:
+            await ctx.reply("😕 لا يوجد ما يُخلط — الطابور يحتاج أغنيتين على الأقل.", mention_author=False)
+            return
+        random.shuffle(q)
+        await ctx.reply(f"🔀 تم خلط **{len(q)}** أغنية في الطابور.", mention_author=False)
+
+    @commands.command(name="skipto", aliases=["stt"], help="التشغيل مباشرة من موضع في الطابور")
+    async def skipto(self, ctx, index: int = None):
+        gid = ctx.guild.id
+        if index is None or index < 1:
+            await ctx.reply(f"✏️ الاستخدام: `{PREFIX}skipto رقم` (الموضع في الطابور)", mention_author=False)
+            return
+        q = self._queue_of(gid)
+        if index > len(q):
+            await ctx.reply(f"😕 الموضع {index} خارج الطابور (الحجم: {len(q)}).", mention_author=False)
+            return
+        item = q.pop(index - 1)
+        vc = ctx.guild.voice_client
+        if isinstance(vc, wavelink.Player):
+            try:
+                vc.autoplay = wavelink.AutoPlayMode.disabled
+                await vc.play(item)
+                await ctx.reply(f"⏭ تشغيل مباشر: **{item.title}**", mention_author=False)
+            except Exception as e:
+                q.insert(0, item)
+                await ctx.reply(f"❌ فشل التشغيل: `{e}`", mention_author=False)
+            return
+        q.insert(0, item)
+        if vc and (vc.is_playing() or vc.is_paused()):
+            await ctx.reply(f"⏭ الانتقال إلى: **{item.get('title') if isinstance(item, dict) else item}**", mention_author=False)
+            vc.stop()
+        else:
+            nxt = q.pop(0)
+            await self._ff_start(ctx.guild, vc, nxt)
+
+    @commands.command(name="remove", aliases=["rm"], help="إزالة أغنية من الطابور")
+    async def remove(self, ctx, index: int = None):
+        gid = ctx.guild.id
+        if index is None or index < 1:
+            await ctx.reply(f"✏️ الاستخدام: `{PREFIX}remove رقم`", mention_author=False)
+            return
+        q = self._queue_of(gid)
+        if index > len(q):
+            await ctx.reply(f"😕 الموضع {index} خارج الطابور (الحجم: {len(q)}).", mention_author=False)
+            return
+        item = q.pop(index - 1)
+        title = getattr(item, "title", None) or (item.get("title") if isinstance(item, dict) else str(item))
+        await ctx.reply(f"🗑️ أُزيلت: **{title}**", mention_author=False)
+
+    @commands.command(name="seek", help="الانتقال إلى زمن (mm:ss) — Lavalink فقط")
+    async def seek(self, ctx, position: str = None):
+        vc = ctx.guild.voice_client
+        if position is None:
+            await ctx.reply(f"✏️ الاستخدام: `{PREFIX}seek 1:30`", mention_author=False)
+            return
+        parts = position.strip().split(":")
+        try:
+            if len(parts) == 2:
+                seconds = int(parts[0]) * 60 + int(parts[1])
+            else:
+                seconds = int(parts[0])
+        except ValueError:
+            await ctx.reply("❌ صيغة غير صحيحة — مثال: `1:30`", mention_author=False)
+            return
+        if isinstance(vc, wavelink.Player) and vc.current:
+            try:
+                await vc.seek(seconds * 1000)
+                await ctx.reply(f"⏩ تم الانتقال إلى `{position}`", mention_author=False)
+            except Exception as e:
+                await ctx.reply(f"❌ فشل الانتقال: `{e}`", mention_author=False)
+            return
+        await ctx.reply("⚠️ الانتقال الزمني مدعوم فقط مع محرك Lavalink.", mention_author=False)
+
+    @commands.command(name="join", aliases=["j"], help="دعوة البوت لقناتك الصوتية")
+    async def join(self, ctx):
+        vc = await self._ensure_voice(ctx)
+        if vc is not None:
+            await ctx.reply(f"👋 انضممت إلى **{vc.channel.name}**", mention_author=False)
+
+    @commands.command(name="leave", aliases=["dc", "disconnect"], help="خروج البوت من القناة")
+    async def leave(self, ctx):
+        gid = ctx.guild.id
+        vc = ctx.guild.voice_client
+        if vc is None:
+            await ctx.reply("😕 لست متصلاً أصلاً.", mention_author=False)
+            return
+        self._cleanup_guild(gid)
+        await vc.disconnect(force=True)
+        await ctx.reply("👋 خرجت من القناة. اراك لاحقاً!", mention_author=False)
+
+    @commands.command(name="247", aliases=["24/7", "stay"], help="تفعيل/تعطيل البقاء 24/7")
+    async def stay(self, ctx):
+        gid = ctx.guild.id
+        cur = self.stay_247.get(gid, False)
+        self.stay_247[gid] = not cur
+        if self.stay_247[gid]:
+            self._idle_since.pop(gid, None)
+        else:
+            self._idle_since[gid] = time.monotonic()
+        self._save_settings(gid)
+        state = "مفعّل ✅ (سأبقى في القناة)" if self.stay_247[gid] else "معطّل ⛔ (سأخرج عند الخمول)"
+        await ctx.reply(f"🕰️ وضع 24/7: {state}", mention_author=False)
+
+    @commands.command(name="history", aliases=["hist"], help="آخر ما تم تشغيله")
+    async def history(self, ctx):
+        rows = await asyncio.to_thread(
+            self.db.fetchall,
+            "SELECT title, user_name, played_at FROM history WHERE guild_id=%s ORDER BY id DESC LIMIT 10",
+            (ctx.guild.id,),
+        )
+        if not rows:
+            await ctx.reply("📭 لا يوجد سجل تشغيل بعد.", mention_author=False)
+            return
+        lines = []
+        for i, r in enumerate(rows, start=1):
+            who = r.get("user_name") or "؟"
+            lines.append(f"**{i}.** {r.get('title')} — بواسطة `{who}`")
+        embed = discord.Embed(title="🕘 آخر ما تم تشغيله", description="\n".join(lines),
+                              color=discord.Color.gold())
+        await ctx.reply(embed=embed, mention_author=False)
+
+    @commands.command(name="ping", help="سرعة الاستجابة وحالة المحرك")
+    async def ping(self, ctx):
+        engine = "🛡 Lavalink" if ENGINE == "lavalink" else "🔧 وضع بديل yt-dlp/ffmpeg"
+        db = "✅" if self.db.available else "⚠️ غير متاحة"
+        embed = discord.Embed(
+            title="🏓 Pong!",
+            description=f"⚡ الاستجابة: `{round(self.bot.latency * 1000)}ms`\n"
+                        f"🎧 المحرك: `{engine}`\n"
+                        f"🗄️ قاعدة البيانات: `{db}`",
+            color=discord.Color.green(),
+        )
+        await ctx.reply(embed=embed, mention_author=False)
+
+    @commands.command(name="help", aliases=["h", "commands"], help="قائمة الأوامر")
+    async def help_cmd(self, ctx):
+        engine = "🛡 Lavalink (مستقر)" if ENGINE == "lavalink" else "🔧 وضع بديل yt-dlp/ffmpeg"
+        desc = (
+            "## 🎵 بوت الموسيقى — أوامري\n"
+            "الأوامر تعمل **بالبادئة** `!` أو **بدونها** مباشرة.\n\n"
+            "### ▶️ التشغيل\n"
+            f"`{PREFIX}play <اسم أو رابط>` — يعرض قائمة نتائج مرقّمة، اكتب **رقم** الأغنية لتشغيلها\n"
+            f"`{PREFIX}queue` — عرض الطابور • `{PREFIX}np` — شغّال الآن\n"
+            f"`{PREFIX}skip` — تخطي • `{PREFIX}pause` / `{PREFIX}resume` — إيقاف مؤقت/استئناف\n"
+            f"`{PREFIX}stop` — إيقاف ومسح • `{PREFIX}skipto <رقم>` — تشغيل موضع من الطابور\n"
+            f"`{PREFIX}remove <رقم>` — إزالة من الطابور • `{PREFIX}shuffle` — خلط\n\n"
+            "### ⚙️ التحكم\n"
+            f"`{PREFIX}volume <0-200>` — الصوت • `{PREFIX}loop off|track|queue` — التكرار\n"
+            f"`{PREFIX}seek mm:ss` — الانتقال الزمني • `{PREFIX}247` — البقاء 24/7\n\n"
+            "### 📌 أخرى\n"
+            f"`{PREFIX}history` — آخر التشغيلات • `{PREFIX}join` / `{PREFIX}leave` — دخول/خروج\n"
+            f"`{PREFIX}ping` — حالة البوت\n\n"
+            f"**المحرك الحالي:** {engine}\n"
+            "**ملاحظة:** لا يضيف البوت أي أغنية للطابور من تلقاء نفسه — تشغّل ما تختاره فقط."
+        )
+        embed = discord.Embed(description=desc, color=discord.Color.blurple())
+        embed.set_footer(text="elminyawe • بوت موسيقى متكامل مع MariaDB + Lavalink")
+        await ctx.reply(embed=embed, mention_author=False)
+
+    # ─────────────────────────────────────────
+    #  معالجة الأخطاء
+    # ─────────────────────────────────────────
+
+    async def cog_command_error(self, ctx, error):
+        if isinstance(error, commands.CommandNotFound):
+            return
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.reply(f"✏️ نقص معاملات — الاستخدام: `{PREFIX}{ctx.command}`", mention_author=False)
+            return
+        if isinstance(error, commands.BadArgument):
+            await ctx.reply("❌ معامل غير صالح — تأكد من الأرقام/القيم.", mention_author=False)
+            return
+        err = getattr(error, "original", error)
+        log.error(f"command {ctx.command} error: {err!r}")
+        try:
+            await ctx.reply(f"❌ حدث خطأ غير متوقع: `{err}`", mention_author=False)
+        except Exception:
+            pass
 
 
-async def run_auto_test(bot) -> None:
-    tester = AutoTest(bot)
+# ─────────────────────────────────────────
+#  وضع الاختبار الخفي (TEST_MODE=1 فقط) — لا يعمل في الإنتاج إطلاقاً
+# ─────────────────────────────────────────
+async def run_test_flow(bot: ElminyaweBot):
+    res_path = TEST_RESULTS_FILE
+
+    def w(line: str):
+        with open(res_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        log.info(f"[TEST] {line}")
+
+    await bot.wait_until_ready()
+    await asyncio.sleep(5)
     try:
-        ok = await tester.run()
-        ok = tester.report() and ok
-    except Exception:
-        log.exception("E2E: crashed")
-        ok = False
+        w(f"TIME {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ENGINE {ENGINE}")
+        guild = bot.get_guild(TEST_GUILD_ID)
+        if guild is None:
+            w("RESULT FAIL no_guild")
+            await bot.close()
+            return
+        ch = guild.get_channel(TEST_CHANNEL_ID)
+        if ch is None or not isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
+            w("RESULT FAIL no_voice_channel")
+            await bot.close()
+            return
+        cog = bot.get_cog("MusicCog")
+        gid = guild.id
+        positions = []
+        if ENGINE == "lavalink":
+            player = None
+            for attempt in range(1, 4):
+                try:
+                    player = await ch.connect(cls=wavelink.Player, self_deaf=True)
+                    break
+                except Exception as e:
+                    w(f"CONNECT-RETRY {attempt}/3 failed: {e!r}")
+                    try:
+                        await asyncio.sleep(3)
+                        await ch.connect(cls=wavelink.Player, self_deaf=True)
+                        break
+                    except Exception:
+                        pass
+                    if attempt == 3:
+                        raise
+            player.autoplay = wavelink.AutoPlayMode.disabled
+            cog._text_channel[gid] = ch
+            tracks, _pl = await cog._lavalink_load("ytsearch:Yaah Tamer Ashour")
+            if not tracks:
+                w("RESULT FAIL no_search_results")
+                await bot.close()
+                return
+            track = tracks[0]
+            w(f"TRACK {track.title} | {track.uri}")
+            await player.play(track)
+            for i in range(9):
+                await asyncio.sleep(5)
+                pos = int(player.position or 0)
+                w(f"TICK {i} pos={pos}ms playing={bool(player.playing)}")
+                positions.append(pos)
+        else:
+            vc = await ch.connect(cls=discord.VoiceClient, self_deaf=True)
+            cog._text_channel[gid] = ch
+            info = await ytdlp_resolve("ytsearch1:Yaah Tamer Ashour")
+            w(f"TRACK {info['title']} | {info['webpage_url']}")
+            await cog._ff_start(guild, vc, info)
+            for i in range(9):
+                await asyncio.sleep(5)
+                pos = int(cog._ff_elapsed(gid) * 1000)
+                w(f"TICK {i} pos={pos}ms playing={vc.is_playing()}")
+                positions.append(pos)
+        advanced = any(positions[i + 1] > positions[i] for i in range(len(positions) - 1))
+        w(f"RESULT {'PASS' if advanced else 'FAIL'} pos_advanced={advanced}")
+        await bot.close()
+    except Exception as e:
+        try:
+            w(f"RESULT FAIL exception={e!r}")
+        except Exception:
+            pass
+        await bot.close()
 
-    result = {
-        "ok": ok,
-        "steps": [{"name": s.name, "ok": s.ok, "detail": s.detail}
-                  for s in tester.steps],
-    }
-    try:
-        with open(RESULT_PATH, "w", encoding="utf-8") as handle:
-            json.dump(result, handle, indent=2)
-    except OSError:
-        pass
 
-    log.info("E2E: exiting (exit code %s)", 0 if ok else 1)
-    await bot.close()
-    os._exit(0 if ok else 1)
-ZEOF_AUTO_TEST_PY
+# ─────────────────────────────────────────
+#  نقطة الدخول
+# ─────────────────────────────────────────
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    if not TOKEN or "PUT_YOUR" in TOKEN.upper():
+        log.critical(
+            "❌ لم يتم ضبط توكن البوت DISCORD_TOKEN!\n"
+            "   • محلياً: ضع التوكن في ENV DISCORD_TOKEN\n"
+            "   • في Railway: Variables → DISCORD_TOKEN = توكن بوتك"
+        )
+        sys.exit(1)
+    bot = ElminyaweBot()
+    bot.run(TOKEN, log_handler=None)
 
-# ─────────────── مولّد إعدادات Lavalink (ربط داخلي 127.0.0.1) ───────────────
-COPY <<'ZEOF_GENCFG_PY' /usr/local/bin/generate_lavalink_config.py
-#!/usr/bin/env python3
-"""Render /opt/lavalink/application.yml from environment variables.
 
-Lavalink binds to 127.0.0.1 ONLY: the bot runs inside the same container and
-talks to it over localhost, so the audio engine is never reachable from the
-outside (no exposed port, no public access).
-"""
-import os
-import sys
+if __name__ == "__main__":
+    main()
+MUSICPY_EOF
 
-password = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
-port = os.getenv("LAVALINK_PORT", "2333")
-spotify_id = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
-spotify_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
-spotify_enabled = bool(spotify_id and spotify_secret)
-# Deezer needs a master key (and an ARL for high-quality formats) - it is
-# disabled by default so the container never crashes on startup.
-deezer_master_key = os.getenv("DEEZER_MASTER_KEY", "").strip()
-deezer_arl = os.getenv("DEEZER_ARL", "").strip()
-deezer_enabled = (
-    os.getenv("DEEZER_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-    and bool(deezer_master_key)
-)
-# Client order matters: TV is the only client with OAuth playback support
-# (the official fix for YouTube's datacenter-IP login wall). WEB stays in the
-# chain as a fallback attempt and MUSIC provides ytmsearch. Override freely
-# with the YOUTUBE_CLIENTS environment variable.
-youtube_clients = os.getenv("YOUTUBE_CLIENTS", "TV,WEB,ANDROID_VR,MUSIC")
-clients_lines = "\n".join(f"      - {c.strip()}" for c in youtube_clients.split(",") if c.strip())
-# YouTube OAuth refresh token. If empty, the OAuth device flow starts at boot
-# and prints the https://www.google.com/device code in the container logs -
-# complete it once, then copy the printed refresh token into the
-# YOUTUBE_REFRESH_TOKEN environment variable and redeploy.
-youtube_oauth_token = os.getenv("YOUTUBE_REFRESH_TOKEN", "").strip()
-_oauth_extra = (f'\n      refreshToken: "{youtube_oauth_token}"'
-                if youtube_oauth_token else "")
-youtube_oauth_block = f"""
-    oauth:
-      enabled: true{_oauth_extra}"""
+# ── إعدادات supervisor (تشغيل الخدمات الثلاث معاً) ──────────────────────────
+RUN cat > /etc/supervisor/conf.d/elminyawe.conf <<'SUPEOF'
+[supervisord]
+nodaemon=true
+logfile=/dev/null
+logfile_maxbytes=0
+pidfile=/tmp/supervisord.pid
 
-spotify_block = ""
-if spotify_enabled:
-    spotify_block = f"""
-      spotify: true
-      applemusic: false
-      deezer: {str(deezer_enabled).lower()}"""
-else:
-    spotify_block = f"""
-      spotify: false
-      applemusic: false
-      deezer: {str(deezer_enabled).lower()}"""
+[program:mariadb]
+command=/usr/sbin/mariadbd --user=mysql --datadir=/var/lib/mysql --bind-address=127.0.0.1 --innodb-buffer-pool-size=64M --max-connections=25 --skip-name-resolve
+priority=10
+autorestart=true
+startretries=20
+startsecs=5
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
 
-spotify_config = ""
-if spotify_enabled:
-    spotify_config = f"""
-    spotify:
-      clientId: "{spotify_id}"
-      clientSecret: "{spotify_secret}"
-      countrycode: "{os.getenv('SPOTIFY_COUNTRY', 'US')}"
-      playlistLoadLimit: 6
-      albumLoadLimit: 6"""
+[program:lavalink]
+directory=/opt/lavalink
+command=/bin/sh -c "exec java $JAVA_OPTS -jar /opt/lavalink/Lavalink.jar"
+priority=20
+autorestart=true
+startretries=20
+startsecs=10
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
 
-deezer_config = ""
-if deezer_enabled:
-    deezer_config = f"""
-    deezer:
-      formats: ["MP3_320", "MP3_128"]
-      masterKey: "{deezer_master_key}"""
-    if deezer_arl:
-        deezer_config += f"""
-      arl: "{deezer_arl}"""
+[program:bot]
+directory=/opt/bot
+command=/usr/local/bin/python3 /opt/bot/music.py
+priority=30
+autorestart=true
+startretries=999
+startsecs=5
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+SUPEOF
 
-yaml = f"""server:
-  port: {port}
-  address: 127.0.0.1
+# ── نقطة الدخول ─────────────────────────────────────────────────────────────
+RUN cat > /opt/entrypoint.sh <<'ENTEOF'
+#!/bin/sh
+# elminyawe — نقطة الدخول
+set -e
 
-lavalink:
-  server:
-    password: "{password}"
-    sources:
-      youtube: false
-      soundcloud: true
-      bandcamp: true
-      twitch: true
-      vimeo: true
-      http: true
-      local: false
-    nonAllocatingFrameBuffer: true
-    playerUpdateInterval: 5
-    youtubePlaylistLoadLimit: 6
+echo "[elminyawe] توليد إعدادات Lavalink من متغيرات البيئة..."
+python3 /opt/bot/gen_lavalink_config.py
 
-  plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
-      snapshot: false
-    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
-      snapshot: false
-
-plugins:
-  youtube:
-    allowSearch: true
-    allowDirectVideoIds: true
-    allowDirectPlaylistIds: true
-    clients:
-{clients_lines}{youtube_oauth_block}
-  lavasrc:
-    providers:
-      - "ytsearch:\\"%ISRC%\\""
-      - "ytsearch:%ISRC%"
-      - "ytsearch:%QUERY%"
-    sources:{spotify_block}
-      flowerytts: false
-      youtube: false
-    lyrics-sources:
-      spotify: {str(spotify_enabled).lower()}
-      deezer: {str(deezer_enabled).lower()}{spotify_config}{deezer_config}
-
-logging:
-  file:
-    path: /opt/lavalink/logs/
-  logback:
-    rollingpolicy:
-      max-file-size: 25MB
-      max-history: 2
-  level:
-    root: INFO
-    lavalink: INFO
-"""
-
-with open("/opt/lavalink/application.yml", "w", encoding="utf-8") as handle:
-    handle.write(yaml)
-print("application.yml written "
-      f"(spotify={'ON' if spotify_enabled else 'OFF'}, "
-      f"deezer={'ON' if deezer_enabled else 'OFF'}, bind=127.0.0.1)",
-      file=sys.stderr)
-ZEOF_GENCFG_PY
-
-# ─────────────── نقطة الدخول الذاتية الإصلاح (MariaDB → Lavalink → البوت) ───────────────
-COPY <<'ZEOF_ENTRYPOINT_SH' /entrypoint.sh
-#!/bin/bash
-# ═══ All-in-one self-healing entrypoint: MariaDB -> Lavalink v4 -> bot ═══
-set -u
-
-DISCORD_TOKEN="${DISCORD_TOKEN:-${BOT_TOKEN:-}}"
-if [ -z "$DISCORD_TOKEN" ]; then
-    echo "ERROR: DISCORD_TOKEN is missing!"
-    echo "Set it in the Dockerfile (ENV DISCORD_TOKEN) or as a Railway variable."
-    sleep 5
-    exit 1
+echo "[elminyawe] تجهيز MariaDB..."
+mkdir -p /run/mysqld /var/lib/mysql
+chown -R mysql:mysql /run/mysqld /var/lib/mysql
+if [ ! -d /var/lib/mysql/mysql ]; then
+  echo "[elminyawe] أول تشغيل: تهيئة قاعدة البيانات..."
+  mariadb-install-db --user=mysql --datadir=/var/lib/mysql --skip-test-db >/dev/null 2>&1 || \
+  mariadb-install-db --user=mysql --datadir=/var/lib/mysql || true
 fi
-export DISCORD_TOKEN
 
-DB_USER="${DB_USER:-musicbot}"
-DB_PASSWORD="${DB_PASSWORD:-musicbotpass}"
-DB_NAME="${DB_NAME:-musicbot}"
-DATADIR="/var/lib/mysql"
-SOCKET="/var/run/mysqld/mysqld.sock"
-MDB_PID=""
-LL_PID=""
+echo "[elminyawe] تشغيل الخدمات (MariaDB + Lavalink + Bot)..."
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/elminyawe.conf
+ENTEOF
+RUN chmod +x /opt/entrypoint.sh \
+    && mkdir -p /run/mysqld /var/lib/mysql \
+    && chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
-shutdown() {
-    echo "[entrypoint] Shutting down..."
-    [ -n "$LL_PID" ] && kill "$LL_PID" 2>/dev/null
-    [ -n "$MDB_PID" ] && kill "$MDB_PID" 2>/dev/null
-    exit 0
-}
-trap shutdown TERM INT
+EXPOSE 2008
 
-start_mariadb() {
-    if [ ! -d "$DATADIR/mysql" ]; then
-        echo "[entrypoint] Initializing MariaDB data directory..."
-        mariadb-install-db --user=mysql --datadir="$DATADIR" \
-            --auth-root-authentication-method=normal --skip-test-db >/dev/null 2>&1
-    fi
-    chown -R mysql:mysql "$DATADIR" 2>/dev/null || true
-    echo "[entrypoint] Starting MariaDB (memory-tuned)..."
-    mariadbd --user=mysql --datadir="$DATADIR" --socket="$SOCKET" \
-        --bind-address=127.0.0.1 --port="${DB_PORT:-3306}" \
-        --skip-name-resolve --performance-schema=OFF \
-        --innodb_buffer_pool_size="${INNODB_BUFFER_POOL_SIZE:-64M}" \
-        --key_buffer_size=8M --max_connections=25 &
-    MDB_PID=$!
-    for i in $(seq 1 60); do
-        if mariadb-admin --socket="$SOCKET" -u root ping >/dev/null 2>&1; then
-            echo "[entrypoint] MariaDB is ready."
-            break
-        fi
-        if ! kill -0 "$MDB_PID" 2>/dev/null; then
-            echo "[entrypoint] FATAL: mariadbd died during startup."
-            exit 1
-        fi
-        sleep 1
-    done
-    mariadb --socket="$SOCKET" -u root <<SQL
-CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$DB_PASSWORD';
-CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
-GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'127.0.0.1';
-GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
-FLUSH PRIVILEGES;
-SQL
-}
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
+    CMD curl -sf -H "Authorization: $LAVALINK_PASSWORD" "http://127.0.0.1:$LAVALINK_PORT/version" || true
 
-start_lavalink() {
-    echo "[entrypoint] Generating Lavalink config (binds to 127.0.0.1 only)..."
-    generate_lavalink_config.py
-    cd /opt/lavalink
-    echo "[entrypoint] Starting Lavalink v4..."
-    java -Xmx"${LAVALINK_HEAP:-512m}" -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError \
-        -jar Lavalink.jar > /opt/lavalink/logs/stdout.log 2>&1 &
-    LL_PID=$!
-    cd /app
-    for i in $(seq 1 300); do
-        code=$(curl -s -o /dev/null -w "%{http_code}" -m 2 \
-            -H "Authorization: ${LAVALINK_PASSWORD:-youshallnotpass}" \
-            "http://127.0.0.1:${LAVALINK_PORT:-2333}/version" 2>/dev/null || echo 000)
-        if [ "$code" = "200" ]; then
-            echo "[entrypoint] Lavalink v4 is ready (took ${i}s)."
-            return 0
-        fi
-        if ! kill -0 "$LL_PID" 2>/dev/null; then
-            echo "[entrypoint] FATAL: Lavalink died during startup. Last log lines:"
-            tail -30 /opt/lavalink/logs/stdout.log
-            exit 1
-        fi
-        sleep 1
-    done
-    echo "[entrypoint] FATAL: Lavalink not ready after 300s. Last log lines:"
-    tail -30 /opt/lavalink/logs/stdout.log
-    exit 1
-}
-
-component_supervisor() {
-    # If MariaDB or Lavalink die at runtime, restart them automatically.
-    while true; do
-        sleep 20
-        if ! kill -0 "$MDB_PID" 2>/dev/null; then
-            echo "[supervisor] MariaDB is down - restarting it."
-            start_mariadb
-        fi
-        if ! kill -0 "$LL_PID" 2>/dev/null; then
-            echo "[supervisor] Lavalink is down - restarting it."
-            tail -5 /opt/lavalink/logs/stdout.log 2>/dev/null || true
-            start_lavalink
-        fi
-    done
-}
-
-start_mariadb
-start_lavalink
-component_supervisor &
-SUP_PID=$!
-
-# The bot itself: restart with backoff on crashes. Exit codes 2/3/4 are
-# permanent configuration problems -> stop instead of looping forever.
-BACKOFF=5
-while true; do
-    cd /app
-    python3 main.py
-    code=$?
-    case "$code" in
-        2|3|4)
-            echo "[entrypoint] FATAL bot configuration problem (exit $code):"
-            echo "   2 = missing/invalid config, 3 = privileged intents disabled,"
-            echo "   4 = invalid Discord token. Fix the token and redeploy."
-            break
-            ;;
-        *)
-            echo "[entrypoint] Bot exited (code $code) - restarting in ${BACKOFF}s..."
-            sleep "$BACKOFF"
-            if [ "$BACKOFF" -lt 60 ]; then BACKOFF=$((BACKOFF * 2)); fi
-            ;;
-    esac
-done
-ZEOF_ENTRYPOINT_SH
-
-RUN chmod 755 /usr/local/bin/generate_lavalink_config.py /entrypoint.sh
-
-# ─────────────── الإعدادات الافتراضية ───────────────
-
-# ⚠️ توكن البوت: غيّر القيمة هنا عند الحاجة (أو تجاوزها بمتغير Railway
-#    باسم DISCORD_TOKEN وستكون لها الأولوية).
-ENV DISCORD_TOKEN="MTM3NTYzNDc0OTM0MjYxMzYwNA.GurQ-I.dzaqNIZrgYlyrN2g6X_JQ3BGsCvIGqKoj5s03U"
-
-ENV YOUTUBE_REFRESH_TOKEN="1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw"
-
-ENV DB_TYPE=mysql \
-    DB_HOST=127.0.0.1 \
-    DB_PORT=3306 \
-    DB_USER=musicbot \
-    DB_PASSWORD=musicbotpass \
-    DB_NAME=musicbot \
-    LAVALINK_HOST=127.0.0.1 \
-    LAVALINK_PORT=2333 \
-    LAVALINK_PASSWORD=youshallnotpass \
-    PREFIX=? \
-    DEFAULT_VOLUME=60 \
-    MAX_VOLUME=150 \
-    AUTO_DISCONNECT_SECONDS=300
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=5 \
-    CMD curl -fsS -H "Authorization: ${LAVALINK_PASSWORD}" \
-        "http://127.0.0.1:${LAVALINK_PORT}/version" >/dev/null \
-    && pgrep -f "python3 main.py" >/dev/null
-
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/entrypoint.sh"]
