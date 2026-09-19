@@ -632,12 +632,19 @@ DB = Database()
 #  البوت الرئيسي
 # ─────────────────────────────────────────────
 def build_prefix():
-    """بادئة مرنة: الأوامر المعروفة تُقبل بدون بادئة، وغيرها يتطلب البادئة."""
+    """بادئة مرنة: الأوامر المعروفة تُقبل بدون بادئة، وغيرها يتطلب البادئة.
+
+    ⚠️ نقطة حرجة: إذا بدأت الرسالة بالبادئة يجب إعادة البادئة الحقيقية (PREFIX)
+    حتى يقتطعها discord.py من النص. إعادة "" تجعل البادئة الفارغة "تطابق" من
+    الموضع صفر دون تقدّم، فيقرأ الإطار الكلمة الأولى بعلامة التعجب نفسها
+    ("!play") ويبحث عن أمر بهذا الاسم ويجده غير موجود — CommandNotFound."""
     def _prefix(bot, message):
         content = (message.content or "").strip()
         if not content:
             return commands.when_mentioned_or(PREFIX)(bot, message)
-        first = content.split(maxsplit=1)[0].lower().lstrip(PREFIX).strip()
+        if content.startswith(PREFIX):
+            return PREFIX       # البادئة العادية — ستُقتطع تلقائياً من النص
+        first = content.split(maxsplit=1)[0].lower()
         if first in BARE_OK:
             return ""           # يُقبل بدون بادئة: play ياه تامر عاشور
         return commands.when_mentioned_or(PREFIX)(bot, message)
@@ -653,7 +660,7 @@ class ElminyaweBot(commands.Bot):
             command_prefix=build_prefix(),
             intents=intents,
             help_command=None,
-            activity=discord.Activity(type=discord.ActivityType.streaming, name="🎵 Only ELMINYAWE..."),
+            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 Only ELMINYAWE"),
         )
 
     async def setup_hook(self):
