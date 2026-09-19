@@ -587,6 +587,8 @@ class MusicBot(commands.Bot):
         self.music = None  # type: ignore[assignment]
         self.db = None  # type: ignore[assignment]
         self.node_watchdog_task: "asyncio.Task | None" = None
+        # Songs already rescued via SoundCloud (prevents rescue loops).
+        self._rescued: set = set()
 
     # ------------------------------------------------------------ startup
     async def setup_hook(self) -> None:
@@ -933,15 +935,36 @@ class MusicCog(commands.Cog):
 
     async def fetch_tracks(self, query: str, source_key: "Optional[str]" = None
                            ) -> "tuple[list[wavelink.Playable], Optional[str]]":
-        """Search for tracks. Returns (tracks, playlist_name)."""
-        if source_key and source_key.lower() in SOURCE_MAP:
+        """Search for tracks. Returns (tracks, playlist_name).
+
+        YouTube blocks many datacenter IPs ("This video requires login"), so
+        if the YouTube/YouTubeMusic search fails or returns nothing we fall
+        back to SoundCloud automatically."""
+        is_url = bool(URL_REGEX.match(query))
+        explicit = bool(source_key and source_key.lower() in SOURCE_MAP)
+
+        if explicit:
             source = SOURCE_MAP[source_key.lower()]
             results = await wavelink.Playable.search(query, source=source)
-        elif URL_REGEX.match(query):
+        elif is_url:
             results = await wavelink.Playable.search(query)
         else:
-            results = await wavelink.Playable.search(
-                query, source=wavelink.TrackSource.YouTubeMusic)
+            try:
+                results = await wavelink.Playable.search(
+                    query, source=wavelink.TrackSource.YouTubeMusic)
+            except Exception as error:
+                log.warning("YouTube search failed (%s) - falling back to "
+                            "SoundCloud.", error)
+                results = await wavelink.Playable.search(
+                    query, source=wavelink.TrackSource.SoundCloud)
+            else:
+                found = list(results.tracks if isinstance(results, wavelink.Playlist)
+                             else (results or []))
+                if not found:
+                    log.info("YouTube search empty - falling back to "
+                             "SoundCloud.")
+                    results = await wavelink.Playable.search(
+                        query, source=wavelink.TrackSource.SoundCloud)
 
         if isinstance(results, wavelink.Playlist):
             return list(results.tracks), results.name
@@ -1156,8 +1179,30 @@ class MusicCog(commands.Cog):
             # something else, the queue must NOT advance.
             return
 
+        channel = self.announce_channel(player.guild)
+
         if reason == "loadFailed":
-            channel = self.announce_channel(player.guild)
+            # YouTube often rejects datacenter IPs at playback time ("This
+            # video requires login"). Try a SoundCloud replacement for the
+            # same song before giving up and advancing the queue.
+            failed = payload.track
+            replacement = await self._soundcloud_replacement(failed)
+            if replacement is not None:
+                try:
+                    await player.play(replacement)
+                    log.info("Rescued playback via SoundCloud: %s",
+                             getattr(replacement, "title", "?"))
+                    if channel is not None:
+                        try:
+                            await channel.send(
+                                f"YouTube failed for **{failed.title}** - "
+                                "playing it from SoundCloud instead.")
+                        except discord.HTTPException:
+                            pass
+                    await self.persist_queue(player)
+                    return
+                except Exception as error:
+                    log.warning("SoundCloud replacement play failed: %s", error)
             if channel is not None:
                 try:
                     await channel.send(
@@ -1182,6 +1227,33 @@ class MusicCog(commands.Cog):
         except Exception as error:
             log.error("Failed to start next track: %s", error)
         await self.persist_queue(player)
+
+    async def _soundcloud_replacement(self, failed):
+        """Find a SoundCloud stand-in for a track that failed to play.
+
+        Each song is rescued at most once (tracked in self._rescued) so a
+        failing SoundCloud track cannot create an endless rescue loop."""
+        if failed is None:
+            return None
+        title = getattr(failed, "title", "")
+        author = getattr(failed, "author", "")
+        query = " ".join(x for x in (title, author) if x)
+        if not query:
+            return None
+        key = query.lower()
+        if key in self._rescued:
+            return None
+        self._rescued.add(key)
+        try:
+            results = await wavelink.Playable.search(
+                query, source=wavelink.TrackSource.SoundCloud)
+        except Exception as error:
+            log.warning("SoundCloud replacement search failed: %s", error)
+            return None
+        for candidate in (results or []):
+            if getattr(candidate, "identifier", "") != getattr(failed, "identifier", ""):
+                return candidate
+        return None
 
     @commands.Cog.listener()
     async def on_wavelink_track_exception(self, payload):
@@ -2422,8 +2494,22 @@ deezer_enabled = (
     os.getenv("DEEZER_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
     and bool(deezer_master_key)
 )
-youtube_clients = os.getenv("YOUTUBE_CLIENTS", "MUSIC,WEB,ANDROID_VR")
+# Client order matters: TV is the only client with OAuth playback support
+# (the official fix for YouTube's datacenter-IP login wall). WEB stays in the
+# chain as a fallback attempt and MUSIC provides ytmsearch. Override freely
+# with the YOUTUBE_CLIENTS environment variable.
+youtube_clients = os.getenv("YOUTUBE_CLIENTS", "TV,WEB,ANDROID_VR,MUSIC")
 clients_lines = "\n".join(f"      - {c.strip()}" for c in youtube_clients.split(",") if c.strip())
+# YouTube OAuth refresh token. If empty, the OAuth device flow starts at boot
+# and prints the https://www.google.com/device code in the container logs -
+# complete it once, then copy the printed refresh token into the
+# YOUTUBE_REFRESH_TOKEN environment variable and redeploy.
+youtube_oauth_token = os.getenv("YOUTUBE_REFRESH_TOKEN", "").strip()
+_oauth_extra = (f'\n      refreshToken: "{youtube_oauth_token}"'
+                if youtube_oauth_token else "")
+youtube_oauth_block = f"""
+    oauth:
+      enabled: true{_oauth_extra}"""
 
 spotify_block = ""
 if spotify_enabled:
@@ -2488,7 +2574,7 @@ plugins:
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
     clients:
-{clients_lines}
+{clients_lines}{youtube_oauth_block}
   lavasrc:
     providers:
       - "ytsearch:\\"%ISRC%\\""
@@ -2668,6 +2754,13 @@ RUN chmod 755 /usr/local/bin/generate_lavalink_config.py /entrypoint.sh
 #    باسم DISCORD_TOKEN وستكون لها الأولوية).
 ENV DISCORD_TOKEN="MTM3NTYzNDc0OTM0MjYxMzYwNA.GurQ-I.dzaqNIZrgYlyrN2g6X_JQ3BGsCvIGqKoj5s03U"
 
+# يوتيوب OAuth: الحل الرسمي لخطأ "This video requires login" الناتج عن حجب
+# يوتيوب لعناوين IP السحابية (مثل Railway). القيمة المدمجة أدناه توكن حساب
+# YouTube مربوط مسبقاً. لتحديثه لاحقاً: ضع متغير YOUTUBE_REFRESH_TOKEN في
+# Railway (له الأولوية) أو بدّل القيمة هنا. إن تُرك فارغاً سيطبع اللوج كود
+# ربط عند الإقلاع تُكمليه على https://www.google.com/device
+ENV YOUTUBE_REFRESH_TOKEN="1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw"
+
 ENV DB_TYPE=mysql \
     DB_HOST=127.0.0.1 \
     DB_PORT=3306 \
@@ -2682,6 +2775,13 @@ ENV DB_TYPE=mysql \
     MAX_VOLUME=150 \
     AUTO_DISCONNECT_SECONDS=300
 
+# بيانات MariaDB تُخزَّن داخل نظام ملفات الحاوية (مؤقتة — تُعاد تهيئتها عند
+# إعادة النشر، وهذا مقبول تماماً لبوت موسيقي). للحفاظ على الطابور وقوائم
+# التشغيل بعد إعادة النشر على Railway: من إعدادات الخدمة ← Volumes أضيفي
+# Volume واربطيه بالمسار /var/lib/mysql — لا حاجة لأي تعديل في هذا الملف.
+# ملاحظة: Railway لا يدعم تعليمة VOLUME داخل Dockerfile، لذلك حُذفت عمداً.
+
+# ملاحظة: لا يوجد EXPOSE — المنفذ 2333 داخلي فقط كما هو مطلوب.
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=5 \
     CMD curl -fsS -H "Authorization: ${LAVALINK_PASSWORD}" \
