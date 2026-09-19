@@ -8,6 +8,9 @@
 #   • لا يضيف البوت أي قائمة انتظار من تلقاء نفسه — يشغّل ما تختاره فقط
 #   • Lavalink v4 + إضافة يوتيوب مع OAuth (رمز التحديث الثابت مضمّن)
 #     وقائمة عملاء مختارة تعمل مع IPs مراكز البيانات
+#   • 🍪 نظام كوكيز ذكي: بعد تسجيل الدخول (OAuth) يجلب النظام كوكيز يوتيوب
+#     بنفسه ويجدّدها كل 6 ساعات — لا حاجة لأي ملف كوكيز يدوي إطلاقاً
+#   • 🛡️ مولد PO Tokens تلقائي (bgutil + deno) لتجاوز فحص "لست روبوتاً"
 #   • إصلاح تلقائي: إذا فشل تحميل يوتيوب يُستخرج رابط الصوت عبر yt-dlp
 #     ويُبثّ مباشرة عبر مصدر HTTP — بلا توقف
 #   • وضع احتياطي كامل: إذا تعذّر الوصول لـ Lavalink يعمل البوت بـ yt-dlp/ffmpeg
@@ -20,9 +23,9 @@
 #   1) ضع توكن بوتك في متغير البيئة DISCORD_TOKEN (أسفله في قسم ENV)
 #      أو اضبطه كمتغيّر Variables في Railway (يفضّل).
 #   2) في Railway: أنشئ Volume واربطه بالمسار  /var/lib/mysql
-#   3) (اختياري) إذا ظهرت رسالة "Sign in to confirm you're not a bot" فأضف
-#      متغير YOUTUBE_COOKIES في Railway وضع فيه محتوى ملف cookies.txt
-#      (من متصفح مسجّل الدخول لليوتيوب) ليتجاوز البوت فحص الـ IP.
+#   3) لا تحتاج لأي ملف كوكيز — النظام يجلبها ويجدّدها تلقائياً بعد الدخول
+#      (وإن رغبت بالكوكيز اليدوية كمستوى إضافي: ضع محتواها في متغير
+#      YOUTUBE_COOKIES في Railway — اختياري تماماً وغير مطلوب).
 #   4) لا حاجة لأي إعدادات أخرى — كل شيء مضمّن في هذا الملف.
 #
 # ═══════════════════════════════════════════════════════════════════════════
@@ -41,17 +44,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         supervisor \
         curl \
         ca-certificates \
+        gnupg \
+        git \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Node.js 22: يشغّل مولّد PO Tokens (bgutil) لتجاوز فحص "لست روبوتاً" ──
+RUN curl -fsSL --retry 5 --retry-delay 3 https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
+
+# ── deno: بيئة JS مطلوبة لمعالجات تحديات yt-dlp الحديثة ──
+RUN curl -fL --retry 5 --retry-delay 3 -o /tmp/deno.zip \
+         "https://github.com/denoland/deno/releases/download/2.9.7/deno-x86_64-unknown-linux-gnu.zip" \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/deno.zip').extractall('/usr/local/bin/')" \
+    && chmod +x /usr/local/bin/deno && rm -f /tmp/deno.zip \
+    && deno --version | head -1
+
+# ── مولّد PO Tokens (bgutil): خادم محلي يولّد توكنات المصدر تلقائياً ──
+# إضافة yt-dlp (bgutil-ytdlp-pot-provider) تتصل به تلقائياً على 127.0.0.1:4416
+RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil \
+    && cd /opt/bgutil/server \
+    && npm install --no-audit --no-fund --loglevel=error \
+    && npx tsc \
+    && npm prune --omit=dev \
+    && test -f /opt/bgutil/server/build/main.js \
+    && npm cache clean --force \
+    && rm -rf /root/.npm
+
 # ── مكتبات بايثون الثابتة ──────────────────────────────────────────────────
 RUN pip install --no-cache-dir \
-        "discord.py==2.4.0" \
+        "discord.py>=2.7.0,<3" \
         "wavelink==3.5.2" \
         "PyNaCl>=1.5" \
         "davey>=0.1" \
         "PyMySQL>=1.1" \
         "PyYAML>=6.0.1" \
+        "bgutil-ytdlp-pot-provider>=1.0" \
         yt-dlp
 
 # ── تحميل Lavalink v4 ───────────────────────────────────────────────────────
@@ -77,6 +107,7 @@ ENV DISCORD_TOKEN="" \
     SPOTIFY_CLIENT_SECRET="682ef411fa5942d28bfe6c409e90f202" \
     YOUTUBE_COOKIES="" \
     YOUTUBE_COOKIES_FILE="" \
+    YT_COOKIES_INTERVAL_SEC="21600" \
     MYSQL_ROOT_PASSWORD="ElMinyaweDB2026" \
     MYSQL_DATABASE="musicbot" \
     JAVA_OPTS="-Xms64m -Xmx512m" \
@@ -384,9 +415,9 @@ if _YT_CLIENTS:
         "player_client": [c.strip() for c in _YT_CLIENTS.split(",") if c.strip()]
     }
 
-# كوكيز يوتيوب اختيارية (لتجاوز فحص "لست روبوتاً" على IPs مراكز البيانات)
-# YOUTUBE_COOKIES: محتوى ملف cookies.txt كامل داخل متغير البيئة
-# YOUTUBE_COOKIES_FILE: أو مسار ملف cookies.txt جاهز
+# كوكيز يوتيوب (لتجاوز فحص "لست روبوتاً" على IPs مراكز البيانات)
+# الأولوية: 1) YOUTUBE_COOKIES (محتوى ملف كامل) 2) YOUTUBE_COOKIES_FILE (مسار)
+# 3) تلقائي: /opt/bot/cookies.txt الذي يجلبونه yt_cookies.py بعد دخول OAuth
 _COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
 _cookies_env = os.getenv("YOUTUBE_COOKIES", "").strip()
 if _cookies_env and not _COOKIES_FILE:
@@ -398,6 +429,11 @@ if _cookies_env and not _COOKIES_FILE:
     log.info("🍪 تم تجهيز ملف كوكيز يوتيوب من متغير YOUTUBE_COOKIES")
 elif _COOKIES_FILE:
     log.info(f"🍪 استخدام ملف الكوكيز: {_COOKIES_FILE}")
+
+# مسار الكوكيز التلقائية — يكتبها yt_cookies.py بعد تسجيل دخول OAuth.
+# يُفحص وجوده عند كل استدعاء (وليس عند الإقلاع فقط) لأن الملف يُكتب
+# بعد انطلاق البوت، ويُجدّد دورياً كل 6 ساعات.
+_AUTO_COOKIES_PATH = os.getenv("YT_AUTO_COOKIES_FILE", "/opt/bot/cookies.txt").strip()
 
 YDL_BASE = {
     "quiet": True,
@@ -417,7 +453,12 @@ YDL_SEARCH["extract_flat"] = True   # بحث سريع بدون تحليل كام
 
 
 def _ydl_extract_sync(ydl_opts: dict, query: str) -> dict:
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    opts = dict(ydl_opts)
+    # حقن الكوكيز التلقائية ديناميكياً (إذا لم توجد كوكيز يدوية)
+    if ("cookiefile" not in opts and _AUTO_COOKIES_PATH
+            and os.path.isfile(_AUTO_COOKIES_PATH)):
+        opts["cookiefile"] = _AUTO_COOKIES_PATH
+    with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(query, download=False)
 
 
@@ -602,7 +643,7 @@ class ElminyaweBot(commands.Bot):
             command_prefix=build_prefix(),
             intents=intents,
             help_command=None,
-            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 For ELMINYAWE<3"),
+            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 Only ELMINYAWE..."),
         )
 
     async def setup_hook(self):
@@ -1903,6 +1944,128 @@ if __name__ == "__main__":
     main()
 MUSICPY_EOF
 
+# ── نظام الكوكيز الذكي: جلب كوكيز يوتيوب تلقائياً بعد دخول OAuth ──
+RUN cat > /opt/bot/yt_cookies.py <<'COOKIESPY_EOF'
+# -*- coding: utf-8 -*-
+# ═══════════════════════════════════════════════════════════════════════════
+#  yt_cookies.py — نظام الكوكيز الذكي (elminyawe)
+#  ─────────────────────────────────────────────────────────────────────────
+#  بعد تسجيل الدخول إلى يوتيوب عبر رمز OAuth الثابت، يقوم النظام بنفسه بجلب
+#  الكوكيز (Set-Cookie) من يوتيوب ويكتبها في cookies.txt بصيغة Netscape،
+#  ثم يجدّدها دورياً — بلا أي تدخل يدوي من المستخدم إطلاقاً.
+#  الملف الناتج يستخدمه yt-dlp (محرك الإصلاح والاحتياط) تلقائياً.
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json
+import os
+import time
+import urllib.parse
+import urllib.request
+
+CLIENT_ID = "861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com"
+CLIENT_SECRET = "SboVhoG9s0rNafixCSGGKXAT"
+TOKEN_URL = "https://www.youtube.com/o/oauth2/token"
+
+DEFAULT_REFRESH_TOKEN = (
+    "1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw"
+)
+REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN", DEFAULT_REFRESH_TOKEN).strip()
+COOKIES_PATH = os.getenv("YT_AUTO_COOKIES_FILE", "/opt/bot/cookies.txt").strip()
+INTERVAL = int(os.getenv("YT_COOKIES_INTERVAL_SEC", "21600"))  # افتراضياً كل 6 ساعات
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+HARVEST_URLS = [
+    "https://www.youtube.com/",
+    "https://music.youtube.com/",
+    "https://www.youtube.com/feed/library",
+]
+
+
+def log(msg):
+    print(f"[yt_cookies] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
+
+
+def refresh_access_token(refresh_token: str) -> str:
+    """تسجيل الدخول: رمز التحديث ← رمز وصول جديد."""
+    data = urllib.parse.urlencode({
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }).encode()
+    req = urllib.request.Request(TOKEN_URL, data=data, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode())
+    return payload["access_token"]
+
+
+def harvest(access_token: str) -> dict:
+    """جلب الكوكيز من يوتيوب مع تمرير رمز الدخول (Authorization: Bearer)."""
+    cookies = {}
+    for url in HARVEST_URLS:
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", UA)
+            req.add_header("Authorization", f"Bearer {access_token}")
+            req.add_header("X-Origin", "https://www.youtube.com")
+            req.add_header("Accept-Language", "en-US,en;q=0.9,ar;q=0.8")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                for sc in resp.headers.get_all("Set-Cookie") or []:
+                    name, _, rest = sc.partition("=")
+                    value = rest.split(";", 1)[0].strip()
+                    name = name.strip()
+                    if name and value:
+                        cookies[name] = value
+        except Exception as exc:
+            log(f"تعذّر الحصاد من {url}: {exc!r}")
+    return cookies
+
+
+def write_netscape(cookies: dict) -> int:
+    """كتابة الكوكيز بصيغة Netscape — كتابة ذرّية عبر tmp + rename."""
+    expiry = int(time.time()) + 31536000  # صلاحية سنة كاملة
+    lines = [
+        "# Netscape HTTP Cookie File",
+        "# Auto-harvested by elminyawe after YouTube OAuth login",
+        f"# updated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    for name, value in sorted(cookies.items()):
+        for domain in (".youtube.com", ".music.youtube.com"):
+            lines.append(f"{domain}\tTRUE\t/\tTRUE\t{expiry}\t{name}\t{value}")
+    tmp = COOKIES_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, COOKIES_PATH)
+    return len(cookies)
+
+
+def harvest_once() -> bool:
+    token = refresh_access_token(REFRESH_TOKEN)
+    log(f"تم تجديد access token ({len(token)} حرفاً)")
+    cookies = harvest(token)
+    if not cookies:
+        log("لم تُلتقط أي كوكيز — ستُعاد المحاولة في الدورة القادمة")
+        return False
+    n = write_netscape(cookies)
+    log(f"🍪 كُتب {n} نوع كوكيز إلى {COOKIES_PATH}")
+    return True
+
+
+def main():
+    log("نظام الكوكيز الذكي انطلق — تسجيل دخول OAuth ثم جلب الكوكيز تلقائياً")
+    while True:
+        try:
+            harvest_once()
+        except Exception as exc:
+            log(f"خطأ في الدورة: {exc!r}")
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
+COOKIESPY_EOF
+
 # ── إعدادات supervisor (تشغيل الخدمات الثلاث معاً) ──────────────────────────
 RUN cat > /etc/supervisor/conf.d/elminyawe.conf <<'SUPEOF'
 [supervisord]
@@ -1921,6 +2084,17 @@ redirect_stderr=true
 stdout_logfile=/dev/fd/1
 stdout_logfile_maxbytes=0
 
+[program:bgutil]
+directory=/opt/bgutil/server
+command=/usr/bin/node /opt/bgutil/server/build/main.js
+priority=15
+autorestart=true
+startretries=20
+startsecs=5
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
 [program:lavalink]
 directory=/opt/lavalink
 command=/bin/sh -c "exec java $JAVA_OPTS -jar /opt/lavalink/Lavalink.jar"
@@ -1928,6 +2102,17 @@ priority=20
 autorestart=true
 startretries=20
 startsecs=10
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
+[program:ytcookies]
+directory=/opt/bot
+command=/usr/local/bin/python3 /opt/bot/yt_cookies.py
+priority=25
+autorestart=true
+startretries=999
+startsecs=5
 redirect_stderr=true
 stdout_logfile=/dev/fd/1
 stdout_logfile_maxbytes=0
