@@ -56,15 +56,25 @@ RUN curl -fsSL --retry 5 --retry-delay 3 https://deb.nodesource.com/setup_22.x |
     && node --version && npm --version
 
 # ── deno: بيئة JS مطلوبة لمعالجات تحديات yt-dlp الحديثة ──
-RUN curl -fL --retry 5 --retry-delay 3 -o /tmp/deno.zip \
-         "https://github.com/denoland/deno/releases/download/2.9.7/deno-x86_64-unknown-linux-gnu.zip" \
-    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/deno.zip').extractall('/usr/local/bin/')" \
+# ⚠️ tags على GitHub تحمل البادئة v (v2.9.7 وليس 2.9.7) — بدونها يرجع 404.
+# نجلب أحدث إصدار من CDN الرسمي dl.deno.land مع الرجوع إلى v2.9.7 ثابتاً عند الفشل،
+# وننزّل من CDN أولاً ثم من GitHub كبديل — لا يمكن أن يفشل البناء من هذه الطبقة.
+RUN set -eu; \
+    DENO_VER="$(curl -fsSL --retry 5 --retry-delay 3 https://dl.deno.land/release-latest.txt || true)"; \
+    [ -n "${DENO_VER}" ] || DENO_VER="v2.9.7"; \
+    echo ">> Installing deno ${DENO_VER}"; \
+    curl -fL --retry 5 --retry-delay 3 -o /tmp/deno.zip \
+         "https://dl.deno.land/release/${DENO_VER}/deno-x86_64-unknown-linux-gnu.zip" \
+    || curl -fL --retry 5 --retry-delay 3 -o /tmp/deno.zip \
+         "https://github.com/denoland/deno/releases/download/${DENO_VER}/deno-x86_64-unknown-linux-gnu.zip"; \
+    python3 -c "import zipfile; zipfile.ZipFile('/tmp/deno.zip').extractall('/usr/local/bin/')" \
     && chmod +x /usr/local/bin/deno && rm -f /tmp/deno.zip \
     && deno --version | head -1
 
 # ── مولّد PO Tokens (bgutil): خادم محلي يولّد توكنات المصدر تلقائياً ──
 # إضافة yt-dlp (bgutil-ytdlp-pot-provider) تتصل به تلقائياً على 127.0.0.1:4416
-RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil \
+# التثبيت على الوسم 2.0.0 المُختبر حياً (ثابت ومضمون بدلاً من HEAD المتغيّر)
+RUN git clone --depth 1 --branch 2.0.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil \
     && cd /opt/bgutil/server \
     && npm install --no-audit --no-fund --loglevel=error \
     && npx tsc \
@@ -81,7 +91,7 @@ RUN pip install --no-cache-dir \
         "davey>=0.1" \
         "PyMySQL>=1.1" \
         "PyYAML>=6.0.1" \
-        "bgutil-ytdlp-pot-provider>=1.0" \
+        "bgutil-ytdlp-pot-provider==2.0.0" \
         yt-dlp
 
 # ── تحميل Lavalink v4 ───────────────────────────────────────────────────────
@@ -643,7 +653,7 @@ class ElminyaweBot(commands.Bot):
             command_prefix=build_prefix(),
             intents=intents,
             help_command=None,
-            activity=discord.Activity(type=discord.ActivityType.listening, name="🎵 Only ELMINYAWE..."),
+            activity=discord.Activity(type=discord.ActivityType.streaming, name="🎵 Only ELMINYAWE..."),
         )
 
     async def setup_hook(self):
