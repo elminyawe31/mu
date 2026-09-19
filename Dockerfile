@@ -2754,11 +2754,6 @@ RUN chmod 755 /usr/local/bin/generate_lavalink_config.py /entrypoint.sh
 #    باسم DISCORD_TOKEN وستكون لها الأولوية).
 ENV DISCORD_TOKEN="MTM3NTYzNDc0OTM0MjYxMzYwNA.GurQ-I.dzaqNIZrgYlyrN2g6X_JQ3BGsCvIGqKoj5s03U"
 
-# يوتيوب OAuth: الحل الرسمي لخطأ "This video requires login" الناتج عن حجب
-# يوتيوب لعناوين IP السحابية (مثل Railway). القيمة المدمجة أدناه توكن حساب
-# YouTube مربوط مسبقاً. لتحديثه لاحقاً: ضع متغير YOUTUBE_REFRESH_TOKEN في
-# Railway (له الأولوية) أو بدّل القيمة هنا. إن تُرك فارغاً سيطبع اللوج كود
-# ربط عند الإقلاع تُكمليه على https://www.google.com/device
 ENV YOUTUBE_REFRESH_TOKEN="1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw"
 
 ENV DB_TYPE=mysql \
@@ -2774,14 +2769,6 @@ ENV DB_TYPE=mysql \
     DEFAULT_VOLUME=60 \
     MAX_VOLUME=150 \
     AUTO_DISCONNECT_SECONDS=300
-
-# بيانات MariaDB تُخزَّن داخل نظام ملفات الحاوية (مؤقتة — تُعاد تهيئتها عند
-# إعادة النشر، وهذا مقبول تماماً لبوت موسيقي). للحفاظ على الطابور وقوائم
-# التشغيل بعد إعادة النشر على Railway: من إعدادات الخدمة ← Volumes أضيفي
-# Volume واربطيه بالمسار /var/lib/mysql — لا حاجة لأي تعديل في هذا الملف.
-# ملاحظة: Railway لا يدعم تعليمة VOLUME داخل Dockerfile، لذلك حُذفت عمداً.
-
-# ملاحظة: لا يوجد EXPOSE — المنفذ 2333 داخلي فقط كما هو مطلوب.
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=5 \
     CMD curl -fsS -H "Authorization: ${LAVALINK_PASSWORD}" \
