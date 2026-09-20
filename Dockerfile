@@ -11,6 +11,11 @@
 #   • 🍪 نظام كوكيز ذكي: بعد تسجيل الدخول (OAuth) يجلب النظام كوكيز يوتيوب
 #     بنفسه ويجدّدها كل 6 ساعات — لا حاجة لأي ملف كوكيز يدوي إطلاقاً
 #   • 🛡️ مولد PO Tokens تلقائي (bgutil + deno) لتجاوز فحص "لست روبوتاً"
+#   • 🌐 نفق Cloudflare WARP مدمج (wgcf + wireproxy، بدون صلاحيات root):
+#     كل حركة يوتيوب (yt-dlp + عملاء Lavalink) تخرج من عنوان استهلاكي نظيف
+#     بدلاً من IP مراكز البيانات المصنّف — هذا هو الحل الجذري لرسالة
+#     "Sign in to confirm you're not a bot". مراقب صحة دائم يبدّل تلقائياً
+#     بين النفق والوضع المباشر — لا انهيار مهما حدث.
 #   • 🎯 المسار الأساسي: yt-dlp يستخرج رابط الصوت المباشر (كوكيز OAuth +
 #     PO Token إجباري + حلّال تحديات يوتيوب 2026) ويُبثّ عبر مصدر HTTP
 #     ثم عملاء Lavalink الداخليون كطبقة ثانية، وإصلاح تلقائي عند أي فشل
@@ -95,6 +100,29 @@ RUN pip install --no-cache-dir \
         "bgutil-ytdlp-pot-provider==2.0.0" \
         "yt-dlp==2026.8.19"
 
+# ── نفق WARP: ثنائيات wgcf + wireproxy (إصدارات مثبتة ومختبرة) ──
+# ⚠️ tags على GitHub تحمل البادئة v. wireproxy مستخدم فضائي لا يحتاج root
+# ولا TUN — يكشف SOCKS5 + HTTP محليين يمرّران عبر نفق WARP.
+RUN set -eu; \
+    mkdir -p /opt/warp/bin; \
+    curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 \
+         -o /opt/warp/bin/wgcf \
+         "https://github.com/ViRb3/wgcf/releases/download/v2.3.0/wgcf_2.3.0_linux_amd64"; \
+    curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 \
+         -o /tmp/wireproxy.tar.gz \
+         "https://github.com/windtf/wireproxy/releases/download/v1.1.3/wireproxy_linux_amd64.tar.gz"; \
+    tar -xzf /tmp/wireproxy.tar.gz -C /opt/warp/bin wireproxy; \
+    rm -f /tmp/wireproxy.tar.gz; \
+    chmod +x /opt/warp/bin/wgcf /opt/warp/bin/wireproxy; \
+    /opt/warp/bin/wireproxy --version | head -1
+
+# ── بروفايل WARP مضمّن (حساب مجهول مجاني مُسجل مسبقاً) ──
+# يُستخدم فور الإقلاع دون الاعتماد على API تسجيل Cloudflare؛ وإذا فشل
+# لسبب ما فسيُسجّل warp_setup حساباً جديداً تلقائياً.
+# يمكن للذوّق استبداله بمتغير البيئة WARP_PROFILE_B64 (base64 لملف wgcf-profile.conf).
+RUN echo 'W0ludGVyZmFjZV0KUHJpdmF0ZUtleSA9IG9DSWRSb3g4N2lLRys1dkNQMDU3YW16WG4xbzloaXI3SEhZZ1FOekhUbEU9CkFkZHJlc3MgPSAxNzIuMTYuMC4yLzMyLCAyNjA2OjQ3MDA6MTEwOjhhNDA6NTcyNzozNTQwOmMxNDQ6ZGM1Zi8xMjgKRE5TID0gMS4xLjEuMSwgMS4wLjAuMSwgMjYwNjo0NzAwOjQ3MDA6OjExMTEsIDI2MDY6NDcwMDo0NzAwOjoxMDAxCk1UVSA9IDEyODAKW1BlZXJdClB1YmxpY0tleSA9IGJtWE9DK0YxRnhFTUY5ZHlpSzJINS8xU1V0ekgwSnVWbzUxaDJ3UGZneW89CkFsbG93ZWRJUHMgPSAwLjAuMC4wLzAsIDo6LzAKRW5kcG9pbnQgPSBlbmdhZ2UuY2xvdWRmbGFyZWNsaWVudC5jb206MjQwOApQZXJzaXN0ZW50S2VlcGFsaXZlID0gMjUK' | base64 -d > /opt/warp/wgcf-profile.default.conf \
+    && test -s /opt/warp/wgcf-profile.default.conf
+
 # ── تحميل Lavalink v4 ───────────────────────────────────────────────────────
 RUN mkdir -p /opt/lavalink /opt/bot \
     && curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 \
@@ -120,6 +148,12 @@ ENV DISCORD_TOKEN="" \
     YOUTUBE_COOKIES_FILE="" \
     YT_COOKIES_INTERVAL_SEC="21600" \
     POT_REFRESH_INTERVAL_SEC="14400" \
+    WARP_ENABLED="1" \
+    WARP_SOCKS_BIND="127.0.0.1:25344" \
+    WARP_HTTP_BIND="127.0.0.1:25345" \
+    WARP_HTTP_PROXY="http://127.0.0.1:25345" \
+    WARP_STATE_FILE="/opt/run/warp_state" \
+    WARP_PROFILE_B64="" \
     MYSQL_ROOT_PASSWORD="ElMinyaweDB2026" \
     MYSQL_DATABASE="musicbot" \
     JAVA_OPTS="-Xms64m -Xmx512m" \
@@ -160,6 +194,25 @@ CLIENTS = [c.strip() for c in os.getenv("YT_CLIENTS", "WEB,TVHTML5_SIMPLY,TV").s
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "b9a4b5775f1847a2b072573589b530f7")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "682ef411fa5942d28bfe6c409e90f202")
 OUTPUT = os.getenv("LAVALINK_CONFIG", "/opt/lavalink/application.yml")
+
+# ── حالة نفق WARP ─────────────────────────────────────────────────────────
+# إذا كان النفق نافذاً (الحالة on) يوجَّه مصدر http في Lavalink (بث روابط
+# googlevideo المباشرة من مسار yt-dlp) عبر بروكسي WARP المحلي — فيطابق
+# عنوان البث عنوان الاستخراج (لا حجب IP-lock). حركة البحث والعملاء
+# الأصليين لا تتأثر بهذه الكتلة إطلاقاً (التوجيه الشامل يتم عبر
+# -DsocksProxyHost داخل lavalink_start.sh عندما تكون الحالة on).
+WARP_STATE_FILE = os.getenv("WARP_STATE_FILE", "/opt/run/warp_state")
+WARP_HTTP_PROXY_HOST = os.getenv("WARP_HTTP_PROXY_HOST", "127.0.0.1")
+WARP_HTTP_PROXY_PORT = int(os.getenv("WARP_HTTP_PROXY_PORT", "25345"))
+
+
+def warp_on() -> bool:
+    """يقرأ حالة النفق من الملف الذي تكتبه warp_health/warp_watch."""
+    try:
+        with open(WARP_STATE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() == "on"
+    except OSError:
+        return False
 
 
 def build_config() -> dict:
@@ -297,6 +350,13 @@ def validate(cfg: dict):
 
 def main():
     cfg = build_config()
+    if warp_on():
+        cfg["lavalink"]["server"]["httpConfig"] = {
+            "proxyHost": WARP_HTTP_PROXY_HOST,
+            "proxyPort": WARP_HTTP_PROXY_PORT,
+            "proxyUser": "",
+            "proxyPassword": "",
+        }
     validate(cfg)
     os.makedirs(os.path.dirname(OUTPUT) or ".", exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
@@ -309,6 +369,10 @@ def main():
     print(f"   clients: {CLIENTS}")
     print(f"   port: {PORT} | password: {'*' * len(PASSWORD)}")
     print(f"   oauth refreshToken: {REFRESH_TOKEN[:12]}... ({len(REFRESH_TOKEN)} chars)")
+    if warp_on():
+        print(f"   WARP: مصدر http عبر بروكسي {WARP_HTTP_PROXY_HOST}:{WARP_HTTP_PROXY_PORT}")
+    else:
+        print("   WARP: غير نافذ — بلا بروكسي")
 
 
 if __name__ == "__main__":
@@ -503,6 +567,21 @@ elif _COOKIES_FILE:
 # بعد انطلاق البوت، ويُجدّد دورياً كل 6 ساعات.
 _AUTO_COOKIES_PATH = os.getenv("YT_AUTO_COOKIES_FILE", "/opt/bot/cookies.txt").strip()
 
+# ── نفق WARP: حالة النفق تُقرأ عند كل استدعاء (وليس عند الإقلاع فقط) ──
+# لأن warp_watch قد يقلب الحالة (on/off) أثناء التشغيل وفق صحة النفق.
+_WARP_STATE_FILE = os.getenv("WARP_STATE_FILE", "/opt/run/warp_state").strip()
+_WARP_HTTP_PROXY = os.getenv("WARP_HTTP_PROXY", "http://127.0.0.1:25345").strip()
+
+
+def _warp_on() -> bool:
+    """True إذا كان نفق WARP نافذاً الآن (الخروج عبر Cloudflare)."""
+    try:
+        with open(_WARP_STATE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() == "on"
+    except OSError:
+        return False
+
+
 YDL_BASE = {
     "quiet": True,
     "no_warnings": True,
@@ -530,6 +609,10 @@ def _ydl_extract_sync(ydl_opts: dict, query: str) -> dict:
     if ("cookiefile" not in opts and _AUTO_COOKIES_PATH
             and os.path.isfile(_AUTO_COOKIES_PATH)):
         opts["cookiefile"] = _AUTO_COOKIES_PATH
+    # حقن بروكسي WARP ديناميكياً: عندما يكون النفق نافذاً يخرج الطلب من
+    # عنوان Cloudflare نظيف بدلاً من IP مراكز البيانات المصنّف من يوتيوب.
+    if _warp_on():
+        opts["proxy"] = _WARP_HTTP_PROXY
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(query, download=False)
 
@@ -2605,6 +2688,524 @@ if __name__ == "__main__":
         sys.exit(0)
 POTSYNC_EOF
 
+# ── نفق WARP: التهيئة + الفحص + المراقبة الدائمة + مشغّلات الخدمات ──
+RUN cat > /opt/bot/warp_setup.py <<'WARPSETUP_EOF'
+# -*- coding: utf-8 -*-
+"""
+elminyawe — تهيئة نفق Cloudflare WARP (wgcf + wireproxy)
+
+لماذا هذا الملف؟ عنوان خروج Railway هو IP مركز بيانات مصنّف من يوتيوب، فيُرجع
+"Sign in to confirm you're not a bot" لكل العملاء مهما أُحسن استخدام POT/كوكيز.
+WARP يمنحنا عنوان خروج استهلاكياً نظيفاً من Cloudflare لنمرر عبره حركة يوتيوب.
+
+الوظيفة (يعمل مرة واحدة عند الإقلاع، قبل كل الخدمات):
+  1. توفير ملف بروفايل WireGuard لـ WARP حسب الأولوية:
+     • متغير البيئة WARP_PROFILE_B64 (base64 لملف wgcf-profile.conf)
+     • النسخة المضمّنة في الصورة /opt/warp/wgcf-profile.default.conf
+     • تسجيل حساب مجهول جديد عبر wgcf register
+  2. تحويل Endpoint إلى IPv4 محسولاً (تحصين من غياب IPv6 في الحاوية)
+  3. ضمان PersistentKeepalive (إبقاء تعيين NAT حياً)
+  4. كتابة /opt/warp/wireproxy.conf (مستمع SOCKS5 + HTTP محلي)
+لا يقرر on/off هنا — قرار الصحة عمل warp_health.py.
+"""
+import base64
+import os
+import socket
+import subprocess
+import sys
+
+WARP_DIR = os.getenv("WARP_DIR", "/opt/warp")
+RUN_DIR = os.getenv("WARP_RUN_DIR", "/opt/run")
+PROFILE = os.path.join(WARP_DIR, "wgcf-profile.conf")
+PROFILE_DEFAULT = os.path.join(WARP_DIR, "wgcf-profile.default.conf")
+WGCF = os.path.join(WARP_DIR, "bin", "wgcf")
+WIREPROXY_CONF = os.path.join(WARP_DIR, "wireproxy.conf")
+SOCKS_BIND = os.getenv("WARP_SOCKS_BIND", "127.0.0.1:25344")
+HTTP_BIND = os.getenv("WARP_HTTP_BIND", "127.0.0.1:25345")
+WARP_ENABLED = os.getenv("WARP_ENABLED", "1").strip() != "0"
+
+
+def log(m: str) -> None:
+    print(f"[warp-setup] {m}", flush=True)
+
+
+def _valid_profile(path: str) -> bool:
+    try:
+        return "PrivateKey" in open(path, "r", encoding="utf-8").read()
+    except OSError:
+        return False
+
+
+def ensure_profile(force_register: bool = False) -> bool:
+    """يضمن وجود بروفايل WARP صالح. يُرجع True عند النجاح."""
+    if force_register and _valid_profile(PROFILE):
+        try:
+            os.remove(PROFILE)
+            log("حُذف البروفايل القديم بطلب --retry")
+        except OSError:
+            pass
+
+    if _valid_profile(PROFILE):
+        log("بروفايل WARP موجود — يُستخدم كما هو")
+        return True
+
+    env_b64 = os.getenv("WARP_PROFILE_B64", "").strip()
+    if env_b64:
+        try:
+            data = base64.b64decode(env_b64)
+            if b"PrivateKey" in data:
+                with open(PROFILE, "wb") as f:
+                    f.write(data)
+                log("بروفايل من WARP_PROFILE_B64")
+                return True
+            log("WARP_PROFILE_B64 لا يحوي PrivateKey — يُتجاهل")
+        except Exception as e:
+            log(f"WARP_PROFILE_B64 غير صالح ({e}) — يُتجاهل")
+
+    if _valid_profile(PROFILE_DEFAULT):
+        with open(PROFILE_DEFAULT, "r", encoding="utf-8") as f:
+            with open(PROFILE, "w", encoding="utf-8") as g:
+                g.write(f.read())
+        log("البروفايل المضمّن في الصورة قيد الاستخدام")
+        return True
+
+    log("لا يوجد بروفايل — تسجيل حساب WARP مجهول جديد عبر wgcf ...")
+    try:
+        subprocess.run([WGCF, "register", "--accept-tos"], cwd=WARP_DIR,
+                       check=True, timeout=180,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run([WGCF, "generate"], cwd=WARP_DIR,
+                       check=True, timeout=60,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    except Exception as e:
+        log(f"فشل تسجيل wgcf: {e}")
+        return False
+
+    if _valid_profile(PROFILE):
+        log("نجح تسجيل حساب WARP جديد")
+        return True
+    return False
+
+
+def force_ipv4_endpoint(text: str) -> str:
+    """يستبدل Endpoint باسمه بـ IPv4 محسولاً — avoids IPv6-less containers."""
+    out = []
+    for ln in text.splitlines():
+        if ln.startswith("Endpoint"):
+            ep = ln.split("=", 1)[1].strip()
+            host, _, port = ep.rpartition(":")
+            try:
+                infos = socket.getaddrinfo(host, None, socket.AF_INET,
+                                           socket.SOCK_DGRAM)
+                ip = infos[0][4][0]
+                log(f"Endpoint {host} -> {ip}")
+                out.append(f"Endpoint = {ip}:{port}")
+            except Exception as e:
+                log(f"تعذّر تحويل Endpoint، يبقى {ep}: {e}")
+                out.append(ln)
+        else:
+            out.append(ln)
+    return "\n".join(out) + "\n"
+
+
+def ensure_keepalive(text: str) -> str:
+    if "PersistentKeepalive" not in text:
+        text = text.rstrip("\n") + "\nPersistentKeepalive = 25\n"
+    return text
+
+
+def write_wireproxy_conf() -> None:
+    conf = (f"WGConfig = {PROFILE}\n"
+            f"\n[Socks5]\nBindAddress = {SOCKS_BIND}\n"
+            f"\n[http]\nBindAddress = {HTTP_BIND}\n")
+    with open(WIREPROXY_CONF, "w", encoding="utf-8") as f:
+        f.write(conf)
+    log(f"كُتب {WIREPROXY_CONF}")
+
+
+def main() -> int:
+    os.makedirs(WARP_DIR, exist_ok=True)
+    os.makedirs(RUN_DIR, exist_ok=True)
+
+    if not WARP_ENABLED:
+        log("WARP_ENABLED=0 — التهيئة متخطاة (الحالة ستُكتب off)")
+        with open(os.path.join(RUN_DIR, "warp_state"), "w",
+                  encoding="utf-8") as f:
+            f.write("off")
+        return 0
+
+    force = "--retry" in sys.argv
+    if not ensure_profile(force_register=force):
+        log("تعذّر توفير بروفايل — تُكتب حالة off وسيُعيد warp_watch المحاولة")
+        with open(os.path.join(RUN_DIR, "warp_state"), "w",
+                  encoding="utf-8") as f:
+            f.write("off")
+        with open(os.path.join(RUN_DIR, "warp_setup_failed"), "w") as f:
+            f.write("1")
+        return 0
+
+    with open(PROFILE, "r", encoding="utf-8") as f:
+        text = f.read()
+    text = ensure_keepalive(text)
+    text = force_ipv4_endpoint(text)
+    with open(PROFILE, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    write_wireproxy_conf()
+    log("التهيئة اكتملت بنجاح")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+WARPSETUP_EOF
+
+RUN cat > /opt/bot/warp_health.py <<'WARPHEALTH_EOF'
+# -*- coding: utf-8 -*-
+"""
+elminyawe — فاحص صحة نفق WARP (يعمل مرة واحدة بعد انطلاق wireproxy)
+
+ينتظر ارتفاع المستمعين ثم يختبر المسار من طرف إلى طرف:
+  HTTP proxy (127.0.0.1:25345) → نفق WARP → cloudflare trace
+معيار النجاح: استجابة 200 تحتوي warp=on (أي أن الخروج فعلاً من نفق WARP).
+يكتب /opt/run/warp_state = on|off + /opt/run/warp_info.json (للتشخيص).
+Lavalink (عبر lavalink_start.sh) ينتظر هذا الملف قبل الإقلاع.
+"""
+import json
+import os
+import time
+import urllib.request
+
+RUN_DIR = os.getenv("WARP_RUN_DIR", "/opt/run")
+STATE_FILE = os.path.join(RUN_DIR, "warp_state")
+INFO_FILE = os.path.join(RUN_DIR, "warp_info.json")
+WARP_ENABLED = os.getenv("WARP_ENABLED", "1").strip() != "0"
+WIREPROXY_CONF = os.getenv("WARP_WIREPROXY_CONF", "/opt/warp/wireproxy.conf")
+HTTP_PROXY = os.getenv("WARP_HTTP_PROXY", "http://127.0.0.1:25345")
+TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+WAIT_TOTAL_SEC = int(os.getenv("WARP_HEALTH_WAIT_SEC", "180"))
+PROBE_TIMEOUT = int(os.getenv("WARP_PROBE_TIMEOUT", "10"))
+
+
+def log(m: str) -> None:
+    print(f"[warp-health] {m}", flush=True)
+
+
+def write_state(state: str, info: dict) -> None:
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(state)
+    os.replace(tmp, STATE_FILE)
+    info = dict(info)
+    info["state"] = state
+    info["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    tmp2 = INFO_FILE + ".tmp"
+    with open(tmp2, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=1)
+    os.replace(tmp2, INFO_FILE)
+    log(f"الحالة النهائية: {state}")
+
+
+def probe() -> tuple:
+    """يُرجع (نجاح؟، معلومات). نجاح = 200 + warp=on عبر بروكسي WARP."""
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": HTTP_PROXY,
+                                         "https": HTTP_PROXY}))
+        with opener.open(TRACE_URL, timeout=PROBE_TIMEOUT) as r:
+            body = r.read().decode("utf-8", "replace")
+        fields = {}
+        for ln in body.splitlines():
+            if "=" in ln:
+                k, _, v = ln.partition("=")
+                fields[k.strip()] = v.strip()
+        if fields.get("warp") == "on":
+            return True, {"egress": fields.get("ip", "?"),
+                          "loc": fields.get("loc", "?")}
+        return False, {"error": f"warp={fields.get('warp', '?')}",
+                       "egress": fields.get("ip", "?")}
+    except Exception as e:
+        return False, {"error": str(e)[:160]}
+
+
+def main() -> int:
+    if not WARP_ENABLED:
+        write_state("off", {"reason": "WARP_ENABLED=0"})
+        return 0
+
+    if not os.path.isfile(WIREPROXY_CONF):
+        log("لا يوجد wireproxy.conf (فشلت التهيئة) — الحالة off")
+        write_state("off", {"reason": "no wireproxy.conf"})
+        return 0
+
+    deadline = time.time() + WAIT_TOTAL_SEC
+    attempt = 0
+    last_info = {"error": "not probed"}
+    while time.time() < deadline:
+        attempt += 1
+        ok, last_info = probe()
+        if ok:
+            log(f"المحاولة {attempt}: النفق نافذ — الخروج {last_info.get('egress')} "
+                f"({last_info.get('loc', '?')})")
+            write_state("on", last_info)
+            return 0
+        log(f"المحاولة {attempt}: غير نافذ ({last_info.get('error', '?')[:80]})")
+        time.sleep(8)
+
+    log(f"تعذّر تأكيد النفق بعد {attempt} محاولات — الحالة off "
+        f"(سيحاول warp_watch استعادته لاحقاً)")
+    write_state("off", last_info)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+WARPHEALTH_EOF
+
+RUN cat > /opt/bot/warp_watch.py <<'WARPWATCH_EOF'
+# -*- coding: utf-8 -*-
+"""
+elminyawe — مراقب نفق WARP الدائم (حلقة كل 60 ثانية)
+
+الهدف: أن يبقى النظام كله فعّالاً مهما كانت حالة النفق:
+  • النفق حي  → الحالة on: كل حركة يوتيوب (Lavalink عبر JVM socks وyt-dlp عبر
+                 البروكسي) تخرج من عنوان Cloudflare نظيف.
+  • النفق ميت → الحالة off: تُعاد الحاوية للوضع المباشر (OAuth+POT عبر IP
+                 Railway كما في السابق) — لا انهيار، فقط أقصى ما يسمح به IP.
+مغناطيس الانتقال (off↔on) يتضمن إعادة توليد application.yml + إعادة تشغيل
+Lavalink فقط عند تغيّر الحالة الفعلي (نادراً)، والبوت يعيد الاتصال تلقائياً.
+
+سياسة الاستعادة عندما تكون الحالة off:
+  1) إن شُفي النفق وحده (wireproxy يعيد المصافحة) → العودة on فوراً.
+  2) بعد 15 دقيقة من الانقطاع: إعادة تشغيل wireproxy ثم الفحص.
+  3) بعد ثلاث محاولات استعادة فاشلة: تسجيل حساب WARP جديد (warp_setup --retry)
+     ثم إعادة تشغيل wireproxy ثم الفحص.
+"""
+import json
+import os
+import subprocess
+import time
+import urllib.request
+
+RUN_DIR = os.getenv("WARP_RUN_DIR", "/opt/run")
+STATE_FILE = os.path.join(RUN_DIR, "warp_state")
+INFO_FILE = os.path.join(RUN_DIR, "warp_info.json")
+SUPERVISOR_CONF = "/etc/supervisor/conf.d/elminyawe.conf"
+WARP_ENABLED = os.getenv("WARP_ENABLED", "1").strip() != "0"
+HTTP_PROXY = os.getenv("WARP_HTTP_PROXY", "http://127.0.0.1:25345")
+TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+INTERVAL = int(os.getenv("WARP_WATCH_INTERVAL", "60"))
+FAILS_TO_OFF = int(os.getenv("WARP_FAILS_TO_OFF", "3"))
+RECOVERY_AFTER_SEC = int(os.getenv("WARP_RECOVERY_AFTER", "900"))
+PROBE_TIMEOUT = 8
+
+
+def log(m: str) -> None:
+    print(f"[warp-watch] {m}", flush=True)
+
+
+def read_state() -> str:
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return "pending"
+
+
+def state_age() -> float:
+    try:
+        return time.time() - os.path.getmtime(STATE_FILE)
+    except OSError:
+        return 0.0
+
+
+def write_state(state: str, info: dict) -> None:
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(state)
+    os.replace(tmp, STATE_FILE)
+    info = dict(info)
+    info["state"] = state
+    info["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    tmp2 = INFO_FILE + ".tmp"
+    with open(tmp2, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=1)
+    os.replace(tmp2, INFO_FILE)
+
+
+def probe() -> tuple:
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": HTTP_PROXY,
+                                         "https": HTTP_PROXY}))
+        with opener.open(TRACE_URL, timeout=PROBE_TIMEOUT) as r:
+            body = r.read().decode("utf-8", "replace")
+        fields = {}
+        for ln in body.splitlines():
+            if "=" in ln:
+                k, _, v = ln.partition("=")
+                fields[k.strip()] = v.strip()
+        if fields.get("warp") == "on":
+            return True, {"egress": fields.get("ip", "?")}
+        return False, {"error": f"warp={fields.get('warp', '?')}"}
+    except Exception as e:
+        return False, {"error": str(e)[:140]}
+
+
+def sctl(*args) -> bool:
+    try:
+        r = subprocess.run(
+            ["supervisorctl", "-c", SUPERVISOR_CONF, *args],
+            capture_output=True, text=True, timeout=60)
+        log(f"supervisorctl {' '.join(args)} → rc={r.returncode} "
+            f"{(r.stdout or r.stderr).strip()[:120]}")
+        return r.returncode == 0
+    except Exception as e:
+        log(f"supervisorctl فشل: {e}")
+        return False
+
+
+def apply_state(state: str, info: dict) -> None:
+    """كتابة الحالة + إعادة توليد إعدادات Lavalink + إعادة تشغيله."""
+    write_state(state, info)
+    log(f"⚠️ انتقال حالة WARP إلى {state} — إعادة توليد الإعدادات وإعادة "
+        f"تشغيل Lavalink (البوت سيعيد الاتصال تلقائياً)")
+    try:
+        subprocess.run(["python3", "/opt/bot/gen_lavalink_config.py"],
+                       capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        log(f"فشل إعادة توليد الإعدادات: {e}")
+    sctl("restart", "lavalink")
+
+
+def recovery_attempt(counter: int) -> None:
+    log(f"استعادة #{counter}: إعادة تشغيل wireproxy ...")
+    if counter >= 3:
+        log("ثلاث محاولات فاشلة — تسجيل حساب WARP جديد (warp_setup --retry)")
+        try:
+            subprocess.run(["python3", "/opt/bot/warp_setup.py", "--retry"],
+                           capture_output=True, text=True, timeout=300)
+        except Exception as e:
+            log(f"warp_setup --retry فشل: {e}")
+    sctl("restart", "wireproxy")
+    time.sleep(50)
+
+
+def main() -> int:
+    log(f"المراقب انطلق (كل {INTERVAL}ث) — WARP_ENABLED={WARP_ENABLED}")
+    fails = 0
+    recoveries = 0
+    if not WARP_ENABLED:
+        log("WARP_ENABLED=0 — المراقب سلبي (يبقى الوضع المباشر)")
+        while True:
+            time.sleep(3600)
+    while True:
+        state = read_state()
+        if state in ("on", "off"):
+            ok, info = probe()
+            if state == "on":
+                if ok:
+                    fails = 0
+                else:
+                    fails += 1
+                    log(f"فشل فحص ({fails}/{FAILS_TO_OFF}): "
+                        f"{info.get('error', '?')[:80]}")
+                    if fails >= FAILS_TO_OFF and state_age() > 120:
+                        fails = 0
+                        apply_state("off", info)
+            else:
+                if ok:
+                    recoveries = 0
+                    log("النفق عاد من تلقاء نفسه!")
+                    apply_state("on", info)
+                elif state_age() > RECOVERY_AFTER_SEC:
+                    recoveries += 1
+                    recovery_attempt(recoveries)
+                    ok2, info2 = probe()
+                    if ok2:
+                        recoveries = 0
+                        apply_state("on", info2)
+                    else:
+                        log(f"الاستعادة #{recoveries} لم تنجح بعد: "
+                            f"{info2.get('error', '?')[:80]}")
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
+WARPWATCH_EOF
+
+RUN cat > /opt/bot/lavalink_start.sh <<'LAVSTART_EOF'
+#!/bin/sh
+# elminyawe — مشغّل Lavalink
+# ينتظر قرار warp_health (on/off) ثم يضيف بروكسي JVM عند نفاذ النفق:
+#   -DsocksProxyHost=127.0.0.1 -DsocksProxyPort=25344
+# يوجّه كل حركة Lavalink الصادرة (youtube-plugin + مصدر http + LavaSrc)
+# عبر نفق WARP. Lavalink لا يصله أي اتصال ديسكورد صادر — الاتصال الوحيد
+# هو websocket البوت الداخل إليه على 127.0.0.1 — فلا تأثير على الصوت.
+STATE_FILE="/opt/run/warp_state"
+SOCKS_PORT="25344"
+
+i=0
+while [ "$i" -lt 240 ]; do
+    if [ -f "$STATE_FILE" ]; then
+        s=$(cat "$STATE_FILE" 2>/dev/null)
+        if [ "$s" = "on" ] || [ "$s" = "off" ]; then
+            break
+        fi
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+s=$(cat "$STATE_FILE" 2>/dev/null || echo off)
+echo "[lavalink-start] WARP state = $s"
+
+EXTRA=""
+if [ "$s" = "on" ]; then
+    EXTRA="-DsocksProxyHost=127.0.0.1 -DsocksProxyPort=${SOCKS_PORT}"
+    echo "[lavalink-start] توجيه حركة Lavalink عبر نفق WARP (SOCKS5 محلي)"
+else
+    echo "[lavalink-start] WARP غير نافذ — تشغيل مباشر (OAuth + POT كما هو)"
+fi
+
+echo "[lavalink-start] إقلاع Lavalink ..."
+exec java $JAVA_OPTS $EXTRA -jar /opt/lavalink/Lavalink.jar
+LAVSTART_EOF
+
+RUN cat > /opt/bot/wireproxy_start.sh <<'WPSTART_EOF'
+#!/bin/sh
+# elminyawe — مشغّل wireproxy
+# ينتظر ظهور ملف الإعداد الذي تكتبه warp_setup.py ثم يشغّل النفق.
+# إذا لم يظهر (تعذر التسجيل نهائياً) يبقى حياً دون عمل حتى تتولى
+# warp_watch الاستعادة لاحقاً — لا انهيارات متكررة أمام supervisor.
+CONF="/opt/warp/wireproxy.conf"
+BIN="/opt/warp/bin/wireproxy"
+
+i=0
+while [ "$i" -lt 600 ]; do
+    if [ -f "$CONF" ] && [ -s "$CONF" ]; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+if [ ! -s "$CONF" ]; then
+    echo "[wireproxy-start] لا يوجد wireproxy.conf بعد 600ث — نوم طويل (بانتظار warp_watch)"
+    while true; do
+        if [ -f "$CONF" ] && [ -s "$CONF" ]; then
+            echo "[wireproxy-start] ظهر ملف الإعداد — إعادة الإقلاع عبر supervisor"
+            exit 0
+        fi
+        sleep 20
+    done
+fi
+
+echo "[wireproxy-start] تشغيل نفق WARP ..."
+exec "$BIN" -c "$CONF"
+WPSTART_EOF
+
 # ── إعدادات supervisor (تشغيل الخدمات الثلاث معاً) ──────────────────────────
 RUN cat > /etc/supervisor/conf.d/elminyawe.conf <<'SUPEOF'
 [supervisord]
@@ -2612,6 +3213,17 @@ nodaemon=true
 logfile=/dev/null
 logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
+
+# مقبس تحكّم supervisor — يسمح لـ warp_watch بإعادة تشغيل الخدمات
+[unix_http_server]
+file=/tmp/supervisor.sock
+chmod=0700
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[supervisorctl]
+serverurl=unix:///tmp/supervisor.sock
 
 [program:mariadb]
 command=/usr/sbin/mariadbd --user=mysql --datadir=/var/lib/mysql --bind-address=127.0.0.1 --innodb-buffer-pool-size=64M --max-connections=25 --skip-name-resolve
@@ -2634,9 +3246,44 @@ redirect_stderr=true
 stdout_logfile=/dev/fd/1
 stdout_logfile_maxbytes=0
 
+[program:warpconf]
+directory=/opt
+command=/usr/local/bin/python3 /opt/bot/warp_setup.py
+priority=12
+autorestart=false
+startretries=1
+startsecs=0
+exitcodes=0
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
+[program:wireproxy]
+directory=/opt
+command=/bin/sh /opt/bot/wireproxy_start.sh
+priority=13
+autorestart=true
+startretries=999
+startsecs=3
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
+[program:warphealth]
+directory=/opt
+command=/usr/local/bin/python3 /opt/bot/warp_health.py
+priority=17
+autorestart=false
+startretries=1
+startsecs=0
+exitcodes=0
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
 [program:lavalink]
 directory=/opt/lavalink
-command=/bin/sh -c "exec java $JAVA_OPTS -jar /opt/lavalink/Lavalink.jar"
+command=/bin/sh /opt/bot/lavalink_start.sh
 priority=20
 autorestart=true
 startretries=20
@@ -2677,6 +3324,17 @@ startsecs=5
 redirect_stderr=true
 stdout_logfile=/dev/fd/1
 stdout_logfile_maxbytes=0
+
+[program:warpwatch]
+directory=/opt
+command=/usr/local/bin/python3 /opt/bot/warp_watch.py
+priority=40
+autorestart=true
+startretries=999
+startsecs=1
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
 SUPEOF
 
 # ── نقطة الدخول ─────────────────────────────────────────────────────────────
@@ -2686,6 +3344,7 @@ RUN cat > /opt/entrypoint.sh <<'ENTEOF'
 set -e
 
 echo "[elminyawe] توليد إعدادات Lavalink من متغيرات البيئة..."
+mkdir -p /opt/run /opt/warp
 python3 /opt/bot/gen_lavalink_config.py
 
 echo "[elminyawe] تجهيز MariaDB..."
@@ -2700,8 +3359,8 @@ fi
 echo "[elminyawe] تشغيل الخدمات (MariaDB + Lavalink + Bot)..."
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/elminyawe.conf
 ENTEOF
-RUN chmod +x /opt/entrypoint.sh \
-    && mkdir -p /run/mysqld /var/lib/mysql \
+RUN chmod +x /opt/entrypoint.sh /opt/bot/lavalink_start.sh /opt/bot/wireproxy_start.sh \
+    && mkdir -p /run/mysqld /var/lib/mysql /opt/run /opt/warp \
     && chown -R mysql:mysql /run/mysqld /var/lib/mysql
 
 EXPOSE 2008
