@@ -11,8 +11,9 @@
 #   • 🍪 نظام كوكيز ذكي: بعد تسجيل الدخول (OAuth) يجلب النظام كوكيز يوتيوب
 #     بنفسه ويجدّدها كل 6 ساعات — لا حاجة لأي ملف كوكيز يدوي إطلاقاً
 #   • 🛡️ مولد PO Tokens تلقائي (bgutil + deno) لتجاوز فحص "لست روبوتاً"
-#   • إصلاح تلقائي: إذا فشل تحميل يوتيوب يُستخرج رابط الصوت عبر yt-dlp
-#     ويُبثّ مباشرة عبر مصدر HTTP — بلا توقف
+#   • 🎯 المسار الأساسي: yt-dlp يستخرج رابط الصوت المباشر (كوكيز OAuth +
+#     PO Token إجباري + حلّال تحديات يوتيوب 2026) ويُبثّ عبر مصدر HTTP
+#     ثم عملاء Lavalink الداخليون كطبقة ثانية، وإصلاح تلقائي عند أي فشل
 #   • وضع احتياطي كامل: إذا تعذّر الوصول لـ Lavalink يعمل البوت بـ yt-dlp/ffmpeg
 #   • سبوتيفاي (بحث + روابط) عبر LavaSrc — قاعدة بيانات MariaDB للتاريخ والإعدادات
 #   • أوامر كاملة: play / queue / skip / pause / resume / stop / volume / loop /
@@ -92,7 +93,7 @@ RUN pip install --no-cache-dir \
         "PyMySQL>=1.1" \
         "PyYAML>=6.0.1" \
         "bgutil-ytdlp-pot-provider==2.0.0" \
-        yt-dlp
+        "yt-dlp==2026.8.19"
 
 # ── تحميل Lavalink v4 ───────────────────────────────────────────────────────
 RUN mkdir -p /opt/lavalink /opt/bot \
@@ -318,14 +319,14 @@ GENCFG_EOF
 RUN cat > /opt/bot/music.py <<'MUSICPY_EOF'
 # -*- coding: utf-8 -*-
 # ═══════════════════════════════════════════════════════════════════════════
-#  elminyawe bot — بوت موسيقى ديسكورد (Lavalink + وضع احتياطي yt-dlp/ffmpeg)
+#  elminyawe bot — بوت موسيقى ديسكورد (yt-dlp أساسي + Lavalink + احتياطي ffmpeg)
 #  ─────────────────────────────────────────────────────────────────────────
 #  • أمر play يعرض قائمة نتائج مرقّمة وينتظر اختيار المستخدم رقم الأغنية
 #  • كل الأوامر تعمل بالبادئة (!play) أو بدونها، وكذلك كأوامر سلاش (/play)
-#  • كل الأوامر تعمل بالبادئة (!play) أو بدونها، وكذلك كأوامر سلاش (/play)
 #  • لا إضافة تلقائية لقائمة الانتظار ولا تشغيل تلقائي (AutoPlay مُعطّل)
-#  • عند فشل تحميل يوتيوب في Lavalink: محاولة إصلاح تلقائية عبر yt-dlp
-#    (يستخرج رابط الصوت المباشر ويبثّه عبر مصدر HTTP في Lavalink)
+#  • 🎯 المسار الأساسي: yt-dlp يستخرج رابط الصوت المباشر (كوكيز OAuth +
+#    PO Token إجباري + حلّال تحديات يوتيوب 2026) ويُبثّ عبر مصدر HTTP
+#  • طبقة ثانية: عملاء Lavalink الداخليون (WEB+POT/OAuth) ثم إصلاح تلقائي
 #  • إذا تعذّر الوصول لـ Lavalink نهائياً: وضع احتياطي كامل بـ yt-dlp + ffmpeg
 #  • قاعدة بيانات MariaDB: سجل التاريخ + إعدادات لكل سيرفر (اختياري - يتحمل
 #    عدم توفرها بدون توقف)
@@ -338,6 +339,9 @@ import random
 import re
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import discord
 import wavelink
@@ -467,12 +471,17 @@ def is_spotify(text: str) -> bool:
 # ─────────────────────────────────────────────
 #  yt-dlp : استخراج روابط الصوت + البحث
 # ─────────────────────────────────────────────
-_YT_CLIENTS = os.getenv("YTDLP_CLIENTS", "").strip()
-_EXTRACTOR_ARGS = {}
-if _YT_CLIENTS:
-    _EXTRACTOR_ARGS["youtube"] = {
-        "player_client": [c.strip() for c in _YT_CLIENTS.split(",") if c.strip()]
-    }
+# سلسلة عملاء yt-dlp بالترتيب — web أولاً لأنه العميل الذي يعمل مع PO Token
+_YT_CLIENTS = os.getenv(
+    "YTDLP_CLIENTS", "web,web_safari,tv_simply,android_vr").strip()
+_EXTRACTOR_ARGS = {"youtube": {
+    "player_client": [c.strip() for c in _YT_CLIENTS.split(",") if c.strip()],
+    # إجبار طلب مشغّل جديد بدلاً من استجابة صفحة الويب الخالية من PO Token
+    "player_skip": ["webpage"],
+    # ⚠️ حاسم جداً: السياسة الافتراضية 'auto' تتخطى جلب PO Token عندما تقول
+    # سياسة العميل required=False — فيبدو الطلب كبوت ويُحجب. 'always' يُلزم الجلب
+    "fetch_pot": ["always"],
+}}
 
 # كوكيز يوتيوب (لتجاوز فحص "لست روبوتاً" على IPs مراكز البيانات)
 # الأولوية: 1) YOUTUBE_COOKIES (محتوى ملف كامل) 2) YOUTUBE_COOKIES_FILE (مسار)
@@ -501,7 +510,11 @@ YDL_BASE = {
     "noplaylist": True,
     "socket_timeout": 20,
     "retries": 3,
+    "format": "bestaudio/best",
     "extractor_args": _EXTRACTOR_ARGS,
+    # حلّال تحديات جافاسكربت البعيدة (EJS) — مطلوب لفك توقيعات يوتيوب الحديثة،
+    # يُنزَّل مرة واحدة ويُخزَّن؛ وإن تعذر فتبقى الصيغ القديمة (itag 18) تعمل
+    "remote_components": ["ejs:github"],
 }
 
 if _COOKIES_FILE and os.path.isfile(_COOKIES_FILE):
@@ -545,6 +558,45 @@ async def ytdlp_search(query: str, count: int = 10) -> list:
     return [x for x in out if x["url"]]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """مفتتاحة بلا متابعة تحويلات — لنقرر المتابعة يدوياً خطوة بخطوة."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _resolve_http_redirects(url: str) -> str:
+    """يتبع سلسلة تحويلات 302 يدوياً ويعيد الرابط النهائي.
+    ⚠️ Lavaplayer (مصدر HTTP في Lavalink) لا يتبع تحويلات googlevideo —
+    بدون هذه الخطوة يفشل البث برسالة 'Not success status code: 302'.
+    متابعة يدوية حتمية (HEAD حتى 5 قفزات) لأن urllib لا يتبع تحويلات HEAD."""
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return url
+    try:
+        opener = urllib.request.build_opener(_NoRedirect)
+    except Exception:
+        return url
+    current = url
+    try:
+        for _hop in range(5):
+            req = urllib.request.Request(current, method="HEAD", headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            })
+            try:
+                with opener.open(req, timeout=15):
+                    return current        # نجاح مباشر بلا تحويلات
+            except urllib.error.HTTPError as e:
+                loc = e.headers.get("Location") if e.headers else None
+                if not loc or not (300 <= e.code < 400):
+                    return current
+                current = urllib.parse.urljoin(current, loc)
+        return current
+    except Exception as e:
+        log.debug(f"redirect resolve kept original ({e!r})")
+        return url
+
+
 async def ytdlp_resolve(url: str) -> dict:
     """استخراج رابط الصوت المباشر لرابط/معرّف فيديو."""
     def _run():
@@ -572,7 +624,7 @@ async def ytdlp_resolve(url: str) -> dict:
         "title": info.get("title") or "غير معروف",
         "duration": int(info.get("duration") or 0),
         "uploader": info.get("uploader") or info.get("channel") or "",
-        "url": direct,
+        "url": _resolve_http_redirects(direct),
         "webpage_url": info.get("webpage_url") or url,
         "id": info.get("id") or "",
     }
@@ -828,6 +880,8 @@ class MusicCog(commands.Cog):
         self._idle_since: dict[int, float] = {}
         # حالة محرك ffmpeg الاحتياطي لكل سيرفر
         self._ff_state: dict[int, dict] = {}
+        # بيانات العرض الأصلية للمسارات المباشرة (مفتاحها معرّف المسار)
+        self._meta_overrides: dict[str, dict] = {}
 
         self._idle_task = self.bot.loop.create_task(self._idle_monitor())
 
@@ -952,6 +1006,91 @@ class MusicCog(commands.Cog):
         if isinstance(res, (list, wavelink.Search)):
             return list(res), None
         return [], None
+
+    # ─────────────────────────────────────────
+    #  المسار الأساسي: yt-dlp يستخرج الرابط المباشر ثم يُبثّ عبر Lavalink
+    # ─────────────────────────────────────────
+
+    @staticmethod
+    def _is_youtube_track(track) -> bool:
+        """هل هذا مسار يوتيوب أصلي (يحتاج استخراجاً عبر yt-dlp)؟"""
+        uri = (getattr(track, "uri", "") or "")
+        return ("youtube.com/" in uri) or ("youtu.be/" in uri)
+
+    def _register_meta(self, track, info: dict):
+        """حفظ بيانات العرض الأصلية للمسار المباشر — مسارات HTTP في Lavalink
+        تحمل عنواناً فارغاً (Unknown title) فنستبدله بالأصلي في كل الواجهات."""
+        key = getattr(track, "identifier", None) or getattr(track, "uri", "") or ""
+        if not key:
+            return
+        self._meta_overrides[key] = {
+            "title": info.get("title") or "",
+            "author": info.get("uploader") or "",
+            "duration_ms": int((info.get("duration") or 0) * 1000),
+            "webpage_url": info.get("webpage_url") or "",
+        }
+        if len(self._meta_overrides) > 300:   # حد أقصى لمنع النمو اللانهائي
+            self._meta_overrides.pop(next(iter(self._meta_overrides)))
+
+    def _display_meta(self, track) -> dict:
+        """بيانات العرض المحفوظة لمسار مباشر، أو قائمة فارغة للمسارات الأصلية."""
+        key = getattr(track, "identifier", None) or getattr(track, "uri", "") or ""
+        return self._meta_overrides.get(key) or {}
+
+    def _disp_title(self, t) -> str:
+        meta = self._display_meta(t)
+        return meta.get("title") or getattr(t, "title", None) or (
+            t.get("title", "") if isinstance(t, dict) else str(t))
+
+    def _disp_len(self, t) -> int:
+        meta = self._display_meta(t)
+        if meta.get("duration_ms"):
+            return int(meta["duration_ms"])
+        v = getattr(t, "length", None)
+        if v is None:
+            v = (t.get("duration") or 0) * 1000 if isinstance(t, dict) else 0
+        return int(v or 0)
+
+    async def _play_via_ytdlp(self, ctx, player: wavelink.Player, yt_url: str,
+                              display_title: str = "") -> bool:
+        """المسار الأساسي للتشغيل: استخراج رابط صوت مباشر عبر yt-dlp
+        (كوكيز OAuth + PO Token إجباري) ثم بثّه عبر مصدر HTTP في Lavalink.
+        يعيد True عند نجاح البدء أو الإضافة للطابور."""
+        if not yt_url:
+            return False
+        try:
+            info = await ytdlp_resolve(yt_url)
+        except Exception as e:
+            log.warning(f"ytdlp primary extract failed ({yt_url}): {e!r}")
+            return False
+        try:
+            loaded, _pl = await self._lavalink_load(info["url"])
+        except Exception as e:
+            log.warning(f"lavalink direct load failed: {e!r}")
+            return False
+        if not loaded:
+            return False
+        t = loaded[0]
+        self._register_meta(t, info)
+        shown = display_title or info.get("title") or ""
+        if getattr(player, "playing", False) or getattr(player, "paused", False):
+            self._queue_of(player.guild.id).append(t)
+            try:
+                await ctx.reply(f"➕ أُضيفت إلى الطابور: **{shown}**", mention_author=False)
+            except Exception:
+                pass
+            return True
+        try:
+            player.autoplay = wavelink.AutoPlayMode.disabled
+            await player.play(t)
+        except Exception as e:
+            log.warning(f"direct play failed: {e!r}")
+            return False
+        try:
+            await ctx.reply(f"🎶 جاري تشغيل: **{shown}**", mention_author=False)
+        except Exception:
+            pass
+        return True
 
     # ─────────────────────────────────────────
     #  أمر play — القائمة المرقّمة ثم اختيار رقم
@@ -1161,6 +1300,14 @@ class MusicCog(commands.Cog):
                     mention_author=False,
                 )
             return
+        # ── المسار الأساسي: يوتيوب عبر yt-dlp أولاً (أقوى ضد الحجب) ──
+        if track is not None and self._is_youtube_track(track):
+            try:
+                if await self._play_via_ytdlp(ctx, vc, track.uri or "",
+                                              title or track.title or ""):
+                    return
+            except Exception as e:
+                log.warning(f"primary ytdlp path failed: {e!r}")
         try:
             vc.autoplay = wavelink.AutoPlayMode.disabled
             await vc.play(track)
@@ -1191,7 +1338,10 @@ class MusicCog(commands.Cog):
                 pass
             self._cancel_np_task(gid)
             await self._send_np_message(gid, player)
-            await self._insert_history(gid, track.title or "", track.uri or "",
+            meta = self._display_meta(track)
+            await self._insert_history(gid,
+                                       meta.get("title") or track.title or "",
+                                       meta.get("webpage_url") or track.uri or "",
                                        getattr(track, "source", "") or "youtube")
         except Exception as e:
             log.error(f"track_start handler error: {e!r}")
@@ -1235,20 +1385,52 @@ class MusicCog(commands.Cog):
             pass
 
     async def _rescue_or_advance(self, player: wavelink.Player, failed_track):
-        """إصلاح تلقائي عند فشل يوتيوب: استخراج رابط صوت مباشر عبر yt-dlp ثم
-        بثّه عبر مصدر HTTP في Lavalink. إذا سبق الإصلاح → الانتقال للتالي."""
+        """إصلاح تلقائي عند فشل التشغيل:
+        • مسار مباشر فشل (رابط منتهٍ مثلاً) → إعادة استخراج مرة واحدة عبر
+          رابط الصفحة الأصلي المحفوظ في بيانات العرض.
+        • مسار يوتيوب أصلي فشل → استخراج عبر yt-dlp ثم بث HTTP.
+        إذا سبق الإصلاح → الانتقال للتالي."""
         gid = player.guild.id
         rescued = self._rescued.setdefault(gid, set())
         key = getattr(failed_track, "identifier", None) or getattr(failed_track, "uri", "") or str(failed_track)
         url = getattr(failed_track, "uri", None)
+        ch = self._text_channel.get(gid)
 
-        if url and key not in rescued:
+        # 1) المسار المباشر نفسه فشل — نعيد الاستخراج من رابط الصفحة الأصلي
+        meta = self._display_meta(failed_track)
+        if meta:
+            rkey = f"direct:{key}"
+            if rkey in rescued:
+                await self._advance_or_stop(player, finished_track=None, failed=True)
+                return
+            rescued.add(rkey)
+            try:
+                info = await ytdlp_resolve(meta.get("webpage_url") or url or "")
+                loaded, _pl = await self._lavalink_load(info["url"])
+                if loaded:
+                    self._register_meta(loaded[0], info)
+                    player.autoplay = wavelink.AutoPlayMode.disabled
+                    await player.play(loaded[0])
+                    if ch is not None:
+                        try:
+                            await ch.send(
+                                f"🔁 جدّدت رابط البث وأكملت: **{info.get('title') or meta.get('title')}**")
+                        except Exception:
+                            pass
+                    return
+            except Exception as e:
+                log.warning(f"direct retry failed: {e!r}")
+            await self._advance_or_stop(player, finished_track=None, failed=True)
+            return
+
+        # 2) مسار يوتيوب أصلي — الاستخراج عبر yt-dlp ثم البث المباشر
+        if url and self._is_youtube_track(failed_track) and key not in rescued:
             rescued.add(key)
             try:
-                ch = self._text_channel.get(gid)
                 info = await ytdlp_resolve(url)
                 loaded, _pl = await self._lavalink_load(info["url"])
                 if loaded:
+                    self._register_meta(loaded[0], info)
                     player.autoplay = wavelink.AutoPlayMode.disabled
                     await player.play(loaded[0])
                     if ch is not None:
@@ -1331,8 +1513,12 @@ class MusicCog(commands.Cog):
         ch = self._text_channel.get(gid)
         if ch is None:
             return
-        embed = self._np_embed(gid, int(player.position or 0), int(track.length or 0),
-                               track.title or "", track.author or "", track.uri or "")
+        meta = self._display_meta(track)
+        embed = self._np_embed(gid, int(player.position or 0),
+                               meta.get("duration_ms") or int(track.length or 0),
+                               meta.get("title") or track.title or "",
+                               meta.get("author") or track.author or "",
+                               meta.get("webpage_url") or track.uri or "")
         try:
             old = self._np_msgs.pop(gid, None)
             if old is not None:
@@ -1352,10 +1538,14 @@ class MusicCog(commands.Cog):
                     await asyncio.sleep(15)
                     cur = player.current or track
                     pos = int(player.position or 0)
+                    m = self._display_meta(cur)
                     try:
                         await self._np_msgs[gid].edit(
-                            embed=self._np_embed(gid, pos, int(cur.length or 0),
-                                                 cur.title or "", cur.author or "", cur.uri or "")
+                            embed=self._np_embed(gid, pos,
+                                                 m.get("duration_ms") or int(cur.length or 0),
+                                                 m.get("title") or cur.title or "",
+                                                 m.get("author") or cur.author or "",
+                                                 m.get("webpage_url") or cur.uri or "")
                         )
                     except discord.NotFound:
                         break
@@ -1597,23 +1787,14 @@ class MusicCog(commands.Cog):
             return
         lines = []
         if current is not None:
-            title = getattr(current, "title", None) or current.get("title", "")
-            dur = getattr(current, "length", None) or (current.get("duration") or 0) * 1000
-            lines.append(f"**▶ الآن:** {title} `{fmt_time(int(dur or 0))}`")
+            lines.append(f"**▶ الآن:** {self._disp_title(current)} `{fmt_time(self._disp_len(current))}`")
         if q:
             lines.append("")
             for i, t in enumerate(q[:10], start=1):
-                title = getattr(t, "title", None) or (t.get("title") if isinstance(t, dict) else str(t))
-                dur = getattr(t, "length", None)
-                if dur is None:
-                    dur = (t.get("duration") or 0) * 1000 if isinstance(t, dict) else 0
-                lines.append(f"**{i}.** {title} `{fmt_time(int(dur or 0))}`")
+                lines.append(f"**{i}.** {self._disp_title(t)} `{fmt_time(self._disp_len(t))}`")
             if len(q) > 10:
                 lines.append(f"…و {len(q) - 10} أخرى")
-        total = sum(
-            int(getattr(t, "length", 0) or ((t.get("duration") or 0) * 1000 if isinstance(t, dict) else 0))
-            for t in q
-        )
+        total = sum(self._disp_len(t) for t in q)
         embed = discord.Embed(
             title=f"📜 قائمة الانتظار ({len(q)}) — المدة الكلية {fmt_time(total)}",
             description="\n".join(lines) or "فارغ",
@@ -1627,8 +1808,12 @@ class MusicCog(commands.Cog):
         gid = ctx.guild.id
         vc = ctx.guild.voice_client
         if isinstance(vc, wavelink.Player) and vc.current:
-            embed = self._np_embed(gid, int(vc.position or 0), int(vc.current.length or 0),
-                                   vc.current.title or "", vc.current.author or "", vc.current.uri or "")
+            m = self._display_meta(vc.current)
+            embed = self._np_embed(gid, int(vc.position or 0),
+                                   m.get("duration_ms") or int(vc.current.length or 0),
+                                   m.get("title") or vc.current.title or "",
+                                   m.get("author") or vc.current.author or "",
+                                   m.get("webpage_url") or vc.current.uri or "")
             await ctx.reply(embed=embed, mention_author=False)
             return
         st = self._ff_state.get(gid)
@@ -1660,7 +1845,7 @@ class MusicCog(commands.Cog):
                 try:
                     vc.autoplay = wavelink.AutoPlayMode.disabled
                     await vc.play(nxt)
-                    await ctx.reply(f"⏭ تم التخطي إلى: **{nxt.title}**", mention_author=False)
+                    await ctx.reply(f"⏭ تم التخطي إلى: **{self._disp_title(nxt)}**", mention_author=False)
                 except Exception as e:
                     await ctx.reply(f"❌ فشل التخطي: `{e}`", mention_author=False)
             else:
@@ -2026,7 +2211,15 @@ async def run_test_flow(bot: ElminyaweBot):
                         raise
             player.autoplay = wavelink.AutoPlayMode.disabled
             cog._text_channel[gid] = ch
-            tracks, _pl = await cog._lavalink_load("ytsearch:Yaah Tamer Ashour")
+            test_url = os.getenv("TEST_PLAY_URL", "").strip()
+            if test_url:
+                tracks, _pl = await cog._lavalink_load(test_url)
+                if not tracks:
+                    w("RESULT FAIL no_test_url_results")
+                    await bot.close()
+                    return
+            else:
+                tracks, _pl = await cog._lavalink_load("ytsearch:Yaah Tamer Ashour")
             if not tracks:
                 w("RESULT FAIL no_search_results")
                 await bot.close()
