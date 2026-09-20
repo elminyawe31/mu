@@ -112,12 +112,13 @@ ENV DISCORD_TOKEN="" \
     LAVALINK_PORT="2008" \
     LAVALINK_PASSWORD="ELMINYAWE" \
     YT_REFRESH_TOKEN="1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw" \
-    YT_CLIENTS="MUSIC,TV,TVHTML5_SIMPLY,ANDROID_VR" \
+    YT_CLIENTS="WEB,TVHTML5_SIMPLY,TV" \
     SPOTIFY_CLIENT_ID="b9a4b5775f1847a2b072573589b530f7" \
     SPOTIFY_CLIENT_SECRET="682ef411fa5942d28bfe6c409e90f202" \
     YOUTUBE_COOKIES="" \
     YOUTUBE_COOKIES_FILE="" \
     YT_COOKIES_INTERVAL_SEC="21600" \
+    POT_REFRESH_INTERVAL_SEC="14400" \
     MYSQL_ROOT_PASSWORD="ElMinyaweDB2026" \
     MYSQL_DATABASE="musicbot" \
     JAVA_OPTS="-Xms64m -Xmx512m" \
@@ -149,7 +150,12 @@ REFRESH_TOKEN = os.getenv(
     "YT_REFRESH_TOKEN",
     "1//0eVooXRETOIiuCgYIARAAGA4SNwF-L9Irvn8-fFnEvPQl33FHJroxf7YbO4WmJ2Go52l3IrBkRh7BIPIiuX0FyGmgo7lAeC9krzw",
 )
-CLIENTS = [c.strip() for c in os.getenv("YT_CLIENTS", "MUSIC,TV,TVHTML5_SIMPLY,ANDROID_VR").split(",") if c.strip()]
+# قائمة العملاء وفق README الرسمي لـ youtube-source (1.18.2):
+#  • WEB            — بث كامل + يعمل مع POT token (يُحقن تلقائياً من potsync)
+#  • TVHTML5_SIMPLY — بث كامل بلا مصادقة
+#  • TV             — العميل الوحيد الذي يدعم OAuth (يعمل بحساب عند الحجب)
+#  ملاحظة: MUSIC لا يدعم البث أصلاً (بحث فقط) — لذلك أُزيل من القائمة.
+CLIENTS = [c.strip() for c in os.getenv("YT_CLIENTS", "WEB,TVHTML5_SIMPLY,TV").split(",") if c.strip()]
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "b9a4b5775f1847a2b072573589b530f7")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "682ef411fa5942d28bfe6c409e90f202")
 OUTPUT = os.getenv("LAVALINK_CONFIG", "/opt/lavalink/application.yml")
@@ -281,6 +287,8 @@ def validate(cfg: dict):
     assert cfg["plugins"]["youtube"]["oauth"]["refreshToken"] == REFRESH_TOKEN, "refresh token mismatch"
     assert cfg["plugins"]["youtube"]["oauth"]["skipInitialization"] is True, "skipInitialization must be true"
     assert cfg["plugins"]["youtube"]["clients"], "clients list empty"
+    # WEB إلزامي: العميل الوحيد الذي يستفيد من POT (التطابق مع مسار potsync)
+    assert "WEB" in cfg["plugins"]["youtube"]["clients"], "WEB client required for POT path"
     assert cfg["plugins"]["lavasrc"]["spotify"]["clientId"] == SPOTIFY_CLIENT_ID, "spotify id mismatch"
     assert cfg["plugins"]["lavasrc"]["spotify"]["clientSecret"] == SPOTIFY_CLIENT_SECRET, "spotify secret mismatch"
     assert YOUTUBE_PLUGIN in [p["dependency"] for p in cfg["lavalink"]["plugins"]], "youtube plugin missing"
@@ -407,6 +415,44 @@ def progress_bar(pos: int, dur: int, size: int = 14) -> str:
     frac = min(max(pos / dur, 0.0), 1.0)
     filled = int(round(frac * size))
     return "▰" * filled + "▱" * (size - filled)
+
+
+def _v_playing(vc) -> bool:
+    """هل يشغّل الآن؟ — تعمل مع wavelink.Player وdiscord.VoiceClient معاً.
+
+    wavelink 3.x يوفر الخاصية playing بدل الطريقة is_playing() القديمة،
+    وdiscord.VoiceClient يوفر is_playing(). هذه الدالة تفحص الاثنين بأمان.
+    """
+    if vc is None:
+        return False
+    prop = getattr(vc, "playing", None)
+    if isinstance(prop, bool):
+        return prop
+    try:
+        return bool(vc.is_playing())
+    except AttributeError:
+        return False
+    except Exception:
+        return False
+
+
+def _v_paused(vc) -> bool:
+    """هل متوقف مؤقتاً؟ — تعمل مع wavelink.Player وdiscord.VoiceClient معاً.
+
+    wavelink 3.x يوفر الخاصية paused بدل الطريقة is_paused() القديمة،
+    وdiscord.VoiceClient يوفر is_paused(). هذه الدالة تفحص الاثنين بأمان.
+    """
+    if vc is None:
+        return False
+    prop = getattr(vc, "paused", None)
+    if isinstance(prop, bool):
+        return prop
+    try:
+        return bool(vc.is_paused())
+    except AttributeError:
+        return False
+    except Exception:
+        return False
 
 
 def is_url(text: str) -> bool:
@@ -1268,7 +1314,7 @@ class MusicCog(commands.Cog):
                   author: str, uri: str) -> discord.Embed:
         vc = self.bot.get_guild(gid).voice_client if self.bot.get_guild(gid) else None
         vol = self._current_volume(self.bot.get_guild(gid)) if self.bot.get_guild(gid) else 100
-        playing = "▶️" if not (getattr(vc, "paused", False) or (vc and vc.is_paused())) else "⏸️"
+        playing = "▶️" if not _v_paused(vc) else "⏸️"
         desc = f"{playing} **[{title}]({uri})**\n" if uri else f"{playing} **{title}**\n"
         desc += f"🎤 {author}\n\n" if author else "\n"
         desc += f"`[{progress_bar(position_ms, duration_ms)}]` **{fmt_time(position_ms)} / {fmt_time(duration_ms)}**\n"
@@ -1442,7 +1488,7 @@ class MusicCog(commands.Cog):
         now = time.monotonic()
         last = st.get("last_tick") or now
         vc = self.bot.get_guild(gid).voice_client if self.bot.get_guild(gid) else None
-        if vc is not None and vc.is_playing():
+        if vc is not None and _v_playing(vc):
             st["played"] += now - last
         st["last_tick"] = now
         return float(st.get("played") or 0.0)
@@ -1457,7 +1503,7 @@ class MusicCog(commands.Cog):
             if vc is None:
                 return
         st = self._ff_state_of(gid)
-        if vc.is_playing() or vc.is_paused():
+        if _v_playing(vc) or _v_paused(vc):
             st["queue"].append(info)
             await ctx.reply(f"➕ أُضيفت إلى الطابور: **{info.get('title')}**", mention_author=False)
             return
@@ -2161,6 +2207,211 @@ if __name__ == "__main__":
     main()
 COOKIESPY_EOF
 
+# ── مزامِن POT: يولّد poToken+visitorData من bgutil ويحقنهما في Lavalink ──
+RUN cat > /opt/bot/pot_sync.py <<'POTSYNC_EOF'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+elminyawe — مزامِن PO Token (bgutil → Lavalink)
+─────────────────────────────────────────────────
+المشكلة التي يحلّها: يوتيوب يحجب التشغيل من سيرفرات الاستضافة برسالة
+"Sign in to confirm you're not a bot" (AllClientsFailedException).
+الحل النهائي: عميل WEB في إضافة يوتيوب يعمل فقط عند توفر زوج صالح من
+(POT token + visitorData). هذا المزامِن:
+  1. يطلب رمزاً جديداً من خادم bgutil المحلي (127.0.0.1:4416)
+     - الاستجابة تحتوي poToken وcontentBinding (وهو visitorData) معاً
+       فتكون الثنائية متطابقة ومولّدة من نفس الجلسة.
+  2. يرسلهما إلى Lavalink عبر POST /youtube (المسار المثبّت تجريبياً)
+     - نرسل refreshToken = "x" (قيمة الحارس في الكود المصدري) حتى لا
+       يُلمس تكوين OAuth القائم إطلاقاً.
+  3. يكتب حالة العمل في pot_status.json للفحص والتشخيص.
+  4. يكرّر التجديد كل POT_REFRESH_INTERVAL_SEC (افتراضياً 4 ساعات —
+       عمر الرمز الفعلي 6 ساعات فنتجديد قبل انتهائه بهامش أمان).
+لا يخرج أبداً (الحلقة الداخلية تبتلع الأخطاء وتعيد المحاولة) —
+مشرف العمليات يعيد تشغيله فقط عند الانهيار الكامل.
+"""
+import json
+import os
+import signal
+import sys
+import time
+
+import urllib.error
+import urllib.request
+
+# ── التهيئة من البيئة (نفس متغيرات باقي النظام) ─────────────────────────────
+BGUTIL_URL = os.getenv("BGUTIL_URL", "http://127.0.0.1:4416").rstrip("/")
+LAVALINK_HOST = os.getenv("LAVALINK_HOST", "127.0.0.1")
+LAVALINK_PORT = os.getenv("LAVALINK_PORT", "2008")
+LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "ELMINYAWE")
+LAVALINK_URL = f"http://{LAVALINK_HOST}:{LAVALINK_PORT}"
+POT_REFRESH_INTERVAL_SEC = int(os.getenv("POT_REFRESH_INTERVAL_SEC", "14400"))
+RETRY_ON_ERROR_SEC = int(os.getenv("POT_RETRY_SEC", "120"))
+STATUS_FILE = os.getenv("POT_STATUS_FILE", "/opt/bot/pot_status.json")
+# عمر الرمز الآمن المتوقع من bgutil (ساعات) — نتجدد عند 60% منه أيضاً
+_T0 = time.time()
+
+
+def log(msg: str) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{stamp} INFO    potsync | {msg}", flush=True)
+
+
+def log_err(msg: str) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{stamp} ERROR   potsync | {msg}", flush=True)
+
+
+def http_json(url: str, method: str = "GET", body: dict = None,
+              headers: dict = None, timeout: int = 30):
+    """طلب HTTP بسيط بدون مكتبات خارجية. يعيد (status, parsed_or_text)."""
+    data = None
+    hdrs = {"Content-Type": "application/json"}
+    hdrs.update(headers or {})
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                return resp.status, json.loads(raw)
+            except ValueError:
+                return resp.status, raw
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")[:300]
+        return e.code, raw
+
+
+def wait_for_service(url: str, headers: dict = None, what: str = "",
+                     max_wait: int = 600) -> bool:
+    """ينتظر جاهزية خدمة (يفحص كل 5 ثوان حتى max_wait ثانية)."""
+    deadline = time.time() + max_wait
+    n = 0
+    while time.time() < deadline:
+        try:
+            code, _ = http_json(url, headers=headers, timeout=8)
+            if 200 <= code < 300:
+                if n:
+                    log(f"{what} أصبح جاهزاً بعد {n} محاولة")
+                return True
+        except Exception:
+            pass
+        n += 1
+        time.sleep(5)
+    log_err(f"{what} لم يصبح جاهزاً خلال {max_wait} ثانية")
+    return False
+
+
+def write_status(update: dict) -> None:
+    """كتابة ذرّية لملف الحالة (tmp ثم rename كما في yt_cookies)."""
+    try:
+        status = {}
+        try:
+            with open(STATUS_FILE, "r", encoding="utf-8") as f:
+                status = json.load(f)
+        except Exception:
+            status = {}
+        status.update(update)
+        status["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        tmp = STATUS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(status, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATUS_FILE)
+    except Exception as e:
+        log_err(f"status write failed: {e!r}")
+
+
+def fetch_pot() -> dict:
+    """يطلب {poToken, contentBinding} من bgutil. يرفع استثناء عند الفشل."""
+    code, body = http_json(f"{BGUTIL_URL}/get_pot", method="POST",
+                           body={}, timeout=180)
+    if code != 200 or not isinstance(body, dict):
+        raise RuntimeError(f"bgutil get_pot HTTP {code}: {str(body)[:200]}")
+    pot = body.get("poToken") or ""
+    vd = body.get("contentBinding") or ""
+    expires = body.get("expiresAt") or ""
+    if not pot or not vd:
+        raise RuntimeError("bgutil returned empty poToken/contentBinding")
+    return {"poToken": pot, "visitorData": vd, "expiresAt": expires}
+
+
+def apply_to_lavalink(pot: str, vd: str) -> None:
+    """يرسل الثنائية إلى Lavalink. refreshToken='x' حارس عدم لمس OAuth."""
+    payload = {"poToken": pot, "visitorData": vd, "refreshToken": "x",
+               "skipInitialization": False}
+    code, body = http_json(
+        f"{LAVALINK_URL}/youtube", method="POST", body=payload,
+        headers={"Authorization": LAVALINK_PASSWORD}, timeout=30)
+    if code != 204:
+        raise RuntimeError(f"lavalink POST /youtube HTTP {code}: {str(body)[:200]}")
+
+
+def refresh_once() -> dict:
+    """دورة تحديث كاملة: جلب ثم تطبيق. يعيد معلومات للسجل."""
+    info = fetch_pot()
+    pot, vd = info["poToken"], info["visitorData"]
+    apply_to_lavalink(pot, vd)
+    return info
+
+
+def main() -> int:
+    log(f"potsync يبدأ — bgutil={BGUTIL_URL} lavalink={LAVALINK_URL} "
+        f"تجديد كل {POT_REFRESH_INTERVAL_SEC} ثانية")
+    write_status({"state": "starting", "applied_count": 0})
+
+    # انتظار الخدمتين — لا نخرج أبداً، فقط نحاول
+    while True:
+        ok_bg = wait_for_service(f"{BGUTIL_URL}/ping", what="bgutil",
+                                 max_wait=900)
+        ok_lv = wait_for_service(f"{LAVALINK_URL}/version",
+                                 headers={"Authorization": LAVALINK_PASSWORD},
+                                 what="lavalink", max_wait=900)
+        if ok_bg and ok_lv:
+            break
+        log_err("إعادة محاولة انتظار الخدمات بعد دقيقة...")
+        time.sleep(60)
+
+    count = 0
+    while True:
+        try:
+            t_start = time.time()
+            info = refresh_once()
+            count += 1
+            elapsed = int(time.time() - t_start)
+            log(f"✅ POT #{count} طُبّق بنجاح ({elapsed} ث) — "
+                f"token: {info['poToken'][:10]}… ({len(info['poToken'])} حرفاً) "
+                f"visitorData: {info['visitorData'][:14]}… "
+                f"({len(info['visitorData'])} حرفاً) expiresAt: {info['expiresAt']}")
+            write_status({"state": "applied", "applied_count": count,
+                          "po_token_prefix": info["poToken"][:10],
+                          "po_token_len": len(info["poToken"]),
+                          "visitor_data_prefix": info["visitorData"][:14],
+                          "visitor_data_len": len(info["visitorData"]),
+                          "expires_at": info["expiresAt"],
+                          "last_error": ""})
+            # نوم حتى الدورة القادمة (بتقطيع قصير ليسمح بالإيقاف النظيف)
+            wake = time.time() + POT_REFRESH_INTERVAL_SEC
+            while time.time() < wake:
+                time.sleep(min(30, max(1, wake - time.time())))
+        except Exception as e:
+            log_err(f"فشل دورة POT (إعادة المحاولة بعد {RETRY_ON_ERROR_SEC} ث): {e!r}")
+            write_status({"state": "error", "last_error": repr(e)[:300]})
+            time.sleep(RETRY_ON_ERROR_SEC)
+
+
+def _term(_sig, _frm):
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _term)
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)
+POTSYNC_EOF
+
 # ── إعدادات supervisor (تشغيل الخدمات الثلاث معاً) ──────────────────────────
 RUN cat > /etc/supervisor/conf.d/elminyawe.conf <<'SUPEOF'
 [supervisord]
@@ -2197,6 +2448,17 @@ priority=20
 autorestart=true
 startretries=20
 startsecs=10
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
+[program:potsync]
+directory=/opt/bot
+command=/usr/local/bin/python3 /opt/bot/pot_sync.py
+priority=22
+autorestart=true
+startretries=999
+startsecs=5
 redirect_stderr=true
 stdout_logfile=/dev/fd/1
 stdout_logfile_maxbytes=0
