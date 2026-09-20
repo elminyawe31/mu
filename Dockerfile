@@ -156,7 +156,7 @@ ENV DISCORD_TOKEN="" \
     WARP_PROFILE_B64="" \
     MYSQL_ROOT_PASSWORD="ElMinyaweDB2026" \
     MYSQL_DATABASE="musicbot" \
-    JAVA_OPTS="-Xms64m -Xmx512m" \
+    JAVA_OPTS="-Xms64m -Xmx256m" \
     IDLE_DISCONNECT_SEC="300"
 
 # ── مولّد إعدادات Lavalink (يكتب application.yml من متغيرات البيئة) ─────────
@@ -399,6 +399,7 @@ RUN cat > /opt/bot/music.py <<'MUSICPY_EOF'
 import asyncio
 import logging
 import os
+import platform
 import random
 import re
 import sys
@@ -911,6 +912,9 @@ class ElminyaweBot(commands.Bot):
 
     async def on_ready(self):
         """مزامنة أوامر السلاش فورياً داخل كل سيرفر يتواجد به البوت (مرة واحدة)."""
+        log.info(
+            f"✅ البوت جاهز ومتصل بديسكورد: {self.user} (id={getattr(self.user, 'id', '?')}) "
+            f"— {len(self.guilds)} سيرفر")
         if getattr(self, "_guild_sync_done", False):
             return
         self._guild_sync_done = True
@@ -2346,6 +2350,13 @@ def main():
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+    # لافتة إقلاع صريحة: تظهر فوراً في لوج Railway لتثبيت أن عملية البوت
+    # بدأت فعلاً؛ غيابها بعد سطور الخدمات يعني أن العملية تموت قبل هذه النقطة
+    log.info(
+        "🚀 elminyawe إقلاع — python %s | discord.py %s | wavelink %s | yt-dlp %s",
+        platform.python_version(), discord.__version__,
+        wavelink.__version__, yt_dlp.version.__version__,
+    )
     if not TOKEN or "PUT_YOUR" in TOKEN.upper():
         log.critical(
             "❌ لم يتم ضبط توكن البوت DISCORD_TOKEN!\n"
@@ -2353,6 +2364,8 @@ def main():
             "   • في Railway: Variables → DISCORD_TOKEN = توكن بوتك"
         )
         sys.exit(1)
+    log.info("🔌 جاري الاتصال بديسكورد (توكن %d حرفاً) — انتظر سطر جاهزية البوت...",
+             len(TOKEN))
     bot = ElminyaweBot()
     bot.run(TOKEN, log_handler=None)
 
@@ -3135,6 +3148,254 @@ if __name__ == "__main__":
     main()
 WARPWATCH_EOF
 
+# ── خدمة التشخيص الذاتي: سطر DIAG مدمج كل 60ث + تقارير DIAG-REPORT تفصيلية ──
+# تضمن أن أي مقطع من لوج Railway يحوي كل معلومات التشخيص (الذاكرة، حالات
+# الخدمات، جهوزية Lavalink/bgutil، حالة WARP، عدّاد إعادة التشغيل)
+RUN cat > /opt/bot/diag.py <<'DIAGPY_EOF'
+# -*- coding: utf-8 -*-
+"""
+elminyawe — خدمة التشخيص الذاتي (diag)
+
+الهدف: ألا تكون أي شكوى مستقبلية "لا تعمل" مفقودة المعلومات أبداً.
+تطبع في لوج Railway (نفس اللوج الذي ينسخه المستخدم مباشرة):
+
+  1) سطر DIAG مدمج كل 60 ثانية — الوقت، الذاكرة المتاحة، حالة كل خدمة من
+     خدمات supervisor، جهوزية واجهة Lavalink وbgutil، حالة نفق WARP،
+     وعدّاد إعادة التشغيل (يكشف حلقات الانهيار فوراً).
+  2) تقارير DIAG-REPORT تفصيلية (متعددة الأسطر) بعد الإقلاع بقليل ثم كل
+     عشر دقائق — فيها هوية كل عملية وحجم الذاكرة المتاحة وإصدار Lavalink.
+
+قراءة الحالات عبر supervisorctl (نفس الآلية المجرَّبة في warp_watch) —
+ولا تعتمد على أي مكتبة خارجية، وتتجاهل أي فشل داخلي حتى لا تموت أبداً.
+"""
+import json
+import os
+import subprocess
+import time
+import urllib.request
+
+# المسار الافتراضي مطابق للإنتاج؛ التجاوز عبر ENV مخصص للاختبار فقط
+SUPERVISOR_CONF = os.getenv("SUPERVISOR_CONF",
+                            "/etc/supervisor/conf.d/elminyawe.conf")
+LAVALINK_PORT = os.getenv("LAVALINK_PORT", "2008").strip()
+LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "ELMINYAWE")
+WARP_STATE_FILE = os.getenv("WARP_STATE_FILE", "/opt/run/warp_state")
+WARP_INFO_FILE = os.path.join(os.path.dirname(WARP_STATE_FILE), "warp_info.json")
+BGUTIL_URL = "http://127.0.0.1:4416/ping"
+INTERVAL = int(os.getenv("DIAG_INTERVAL", "60"))
+DETAILED_EVERY = int(os.getenv("DIAG_DETAILED_EVERY", "10"))
+# الخدمات التي يُراقَب تغيّر pid فيها لكشف حلقات الانهيار
+WATCH_RESTARTS = ("bot", "lavalink", "wireproxy", "bgutil", "mariadb")
+
+_last_pid: dict = {}
+_restart_count: dict = {}
+
+
+def log(m: str) -> None:
+    print(f"[diag] {m}", flush=True)
+
+
+def diag(m: str) -> None:
+    print(f"DIAG {m}", flush=True)
+
+
+def diag_report(m: str) -> None:
+    print(f"DIAG-REPORT {m}", flush=True)
+
+
+def read_uptime() -> int:
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as f:
+            return int(float(f.read().split()[0]))
+    except Exception:
+        return -1
+
+
+def read_mem() -> tuple:
+    """(المتاح ميغابايت، الإجمالي ميغابايت)"""
+    total = avail = -1
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for ln in f:
+                if ln.startswith("MemTotal:"):
+                    total = int(ln.split()[1]) // 1024
+                elif ln.startswith("MemAvailable:"):
+                    avail = int(ln.split()[1]) // 1024
+    except Exception:
+        pass
+    return avail, total
+
+
+def get_supervisor_status() -> dict:
+    """يعيد {name: (state, pid, uptime_sec)} — فارغ عند الفشل."""
+    out = {}
+    try:
+        # الإنتاج: /usr/bin/supervisorctl (حزمة apt بمفسّر النظام)؛
+        # الاحتياط: الاسم من PATH (بيئات الاختبار)
+        sctl = ("/usr/bin/supervisorctl"
+                if os.path.isfile("/usr/bin/supervisorctl") else "supervisorctl")
+        r = subprocess.run(
+            [sctl, "-c", SUPERVISOR_CONF, "status"],
+            capture_output=True, text=True, timeout=45)
+        for ln in (r.stdout or "").splitlines():
+            parts = ln.split()
+            if len(parts) < 2:
+                continue
+            name, state = parts[0], parts[1]
+            pid, up = 0, 0
+            for p in parts[2:]:
+                if p.startswith("pid"):
+                    try:
+                        pid = int(parts[parts.index(p) + 1].rstrip(","))
+                    except (ValueError, IndexError):
+                        pid = 0
+                if p.startswith("uptime"):
+                    try:
+                        seg = parts[parts.index(p) + 1].split(":")
+                        if len(seg) == 4:      # d:h:m:s
+                            up = (int(seg[0]) * 86400 + int(seg[1]) * 3600
+                                  + int(seg[2]) * 60 + int(seg[3]))
+                        elif len(seg) == 3:    # h:m:s
+                            up = (int(seg[0]) * 3600 + int(seg[1]) * 60
+                                  + int(seg[2]))
+                    except (ValueError, IndexError):
+                        up = 0
+            out[name] = (state, pid, up)
+        if not out:
+            log(f"supervisorctl أعاد لا شيء — rc={getattr(r, 'returncode', '?')} "
+                f"stdout={(r.stdout or '')[:100]!r} stderr={(r.stderr or '')[:100]!r}")
+    except Exception as e:
+        log(f"supervisorctl status فشل: {e!r}")
+    return out
+
+
+def http_ok(url: str, auth: str = "", timeout: float = 4.0) -> tuple:
+    """(نجاح؟، نص مختصر) — GET بسيط."""
+    try:
+        req = urllib.request.Request(url)
+        if auth:
+            req.add_header("Authorization", auth)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(120).decode("utf-8", "replace").strip()
+            return True, (body[:60] or "OK")
+    except Exception as e:
+        return False, str(e)[:60]
+
+
+def read_warp() -> str:
+    try:
+        with open(WARP_STATE_FILE, "r", encoding="utf-8") as f:
+            st = f.read().strip()
+        if st in ("on", "off"):
+            try:
+                with open(WARP_INFO_FILE, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+                eg = str(info.get("egress", "?"))[:24]
+                return f"{st}({eg})"
+            except Exception:
+                return st
+        return st or "pending"
+    except OSError:
+        return "pending"
+
+
+def track_restarts(info: dict) -> str:
+    """يحدّث عدّادات إعادة التشغيل ويعيد نصاً مختصراً."""
+    for name in WATCH_RESTARTS:
+        pid = info.get(name, ("", 0, 0))[1]
+        prev = _last_pid.get(name)
+        if prev and pid and pid != prev:
+            _restart_count[name] = _restart_count.get(name, 0) + 1
+        if pid:
+            _last_pid[name] = pid
+    nonzero = {k: v for k, v in _restart_count.items() if v}
+    if not nonzero:
+        return "0"
+    return ",".join(f"{k}:{v}" for k, v in sorted(nonzero.items()))
+
+
+def compact_line(info: dict, iteration: int) -> None:
+    up = read_uptime()
+    avail, total = read_mem()
+    n_total = len(info) if info else 0
+    n_up = sum(1 for v in info.values() if v[0] == "RUNNING")
+    lv_ok, lv_msg = http_ok(f"http://127.0.0.1:{LAVALINK_PORT}/version",
+                            auth=LAVALINK_PASSWORD)
+    bg_ok, _ = http_ok(BGUTIL_URL, timeout=3.0)
+
+    def st(name: str) -> str:
+        v = info.get(name)
+        if not v:
+            return "?"
+        state, _pid, uptime = v
+        short = {"RUNNING": "run", "STARTING": "start", "BACKOFF": "backoff",
+                 "EXITED": "exited", "FATAL": "FATAL", "STOPPED": "stopped",
+                 }.get(state, state.lower())
+        if state == "RUNNING" and uptime:
+            short = f"{short}({uptime}s)"
+        return short
+
+    rst = track_restarts(info)
+    diag(f"i={iteration} up={up}s mem_avail={avail}MB/{total}MB "
+         f"procs={n_up}/{n_total}up "
+         f"bot={st('bot')} lavalink={st('lavalink')} api={'OK' if lv_ok else 'FAIL:' + lv_msg} "
+         f"bgutil={'OK' if bg_ok else 'FAIL'} warp={read_warp()} "
+         f"mariadb={st('mariadb')} wireproxy={st('wireproxy')} "
+         f"potsync={st('potsync')} ytcookies={st('ytcookies')} "
+         f"warpwatch={st('warpwatch')} restarts={rst}")
+
+
+def detailed_report(info: dict, iteration: int) -> None:
+    up = read_uptime()
+    avail, total = read_mem()
+    diag_report(f"════ التقرير التشخيصي التفصيلي (التكرار i={iteration}، عمر الحاوية {up}ث) ════")
+    if info:
+        for name in sorted(info):
+            state, pid, uptime = info[name]
+            extra = f"(pid {pid}، {uptime}ث)" if state == "RUNNING" else ""
+            diag_report(f"  proc {name:10s} = {state} {extra}")
+    else:
+        diag_report("  proc (تعذر قراءة حالة supervisor)")
+    diag_report(f"  memory: total={total}MB available={avail}MB "
+                f"{'⚠️ ضغط ذاكرة!' if 0 <= avail <= 120 else ''}")
+    lv_ok, lv_msg = http_ok(f"http://127.0.0.1:{LAVALINK_PORT}/version",
+                            auth=LAVALINK_PASSWORD)
+    diag_report(f"  lavalink-api: {'OK version=' + lv_msg if lv_ok else 'FAIL: ' + lv_msg}")
+    bg_ok, bg_msg = http_ok(BGUTIL_URL, timeout=3.0)
+    diag_report(f"  bgutil-api: {'OK' if bg_ok else 'FAIL: ' + bg_msg}")
+    diag_report(f"  warp: {read_warp()}")
+    botv = info.get("bot")
+    if botv and botv[0] == "RUNNING":
+        diag_report(f"  bot: حي (pid {botv[1]}، {botv[2]}ث) — سطور دخول ديسكورد تظهر في اللوج فوق هذا التقرير")
+    else:
+        diag_report(f"  bot: الحالة {botv[0] if botv else '?'} — إن كانت EXITED/FATAL فاللوج أعلى التقرير يحوي سبب الانهيار")
+
+
+def main() -> int:
+    log(f"خدمة التشخيص انطلقت — سطر DIAG كل {INTERVAL}ث "
+        f"+ تقرير تفصيلي كل {DETAILED_EVERY} دقائق تقريباً")
+    iteration = 0
+    while True:
+        info = get_supervisor_status()
+        iteration += 1
+        try:
+            compact_line(info, iteration)
+        except Exception as e:
+            log(f"compact DIAG فشل: {e!r}")
+        # تقارير تفصيلية: أول تقرير فوراً، الثاني بعد دقيقتين (بعد استقرار
+        # قرار WARP وإقلاع Lavalink)، ثم كل DETAILED_EVERY تكرارات.
+        if iteration == 1 or iteration == 3 or iteration % DETAILED_EVERY == 0:
+            try:
+                detailed_report(info, iteration)
+            except Exception as e:
+                log(f"detailed DIAG فشل: {e!r}")
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+DIAGPY_EOF
+
 RUN cat > /opt/bot/lavalink_start.sh <<'LAVSTART_EOF'
 #!/bin/sh
 # elminyawe — مشغّل Lavalink
@@ -3202,6 +3463,13 @@ if [ ! -s "$CONF" ]; then
     done
 fi
 
+# عند إعادة التشغيل بعد انهيار سابق: اطبع آخر 3 أسطر من سجل النفق السابق
+# (السجل كاملاً في /var/log/wireproxy.log ولا يُغرق لوج Railway إطلاقاً)
+if [ -f /var/log/wireproxy.log ]; then
+    echo "[wireproxy-start] آخر 3 أسطر من سجل الجلسة السابقة للنفق:"
+    tail -n 3 /var/log/wireproxy.log 2>/dev/null || true
+fi
+
 echo "[wireproxy-start] تشغيل نفق WARP ..."
 exec "$BIN" -c "$CONF"
 WPSTART_EOF
@@ -3226,7 +3494,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 serverurl=unix:///tmp/supervisor.sock
 
 [program:mariadb]
-command=/usr/sbin/mariadbd --user=mysql --datadir=/var/lib/mysql --bind-address=127.0.0.1 --innodb-buffer-pool-size=64M --max-connections=25 --skip-name-resolve
+command=/usr/sbin/mariadbd --user=mysql --datadir=/var/lib/mysql --bind-address=127.0.0.1 --innodb-buffer-pool-size=64M --max-connections=25 --skip-name-resolve --performance-schema=off
 priority=10
 autorestart=true
 startretries=20
@@ -3266,8 +3534,11 @@ autorestart=true
 startretries=999
 startsecs=3
 redirect_stderr=true
-stdout_logfile=/dev/fd/1
-stdout_logfile_maxbytes=0
+; ⚠️ إغراق DEBUG من wireproxy يطغى على لوج Railway ويُخفي سطور باقي الخدمات —
+; يُوجّه لملف مُدوّر هنا، وwarp_watch/diag يكشفان صحته عبر الحالة وWARP state
+stdout_logfile=/var/log/wireproxy.log
+stdout_logfile_maxbytes=5242880
+stdout_logfile_backups=2
 
 [program:warphealth]
 directory=/opt
@@ -3286,7 +3557,7 @@ directory=/opt/lavalink
 command=/bin/sh /opt/bot/lavalink_start.sh
 priority=20
 autorestart=true
-startretries=20
+startretries=999
 startsecs=10
 redirect_stderr=true
 stdout_logfile=/dev/fd/1
@@ -3329,6 +3600,17 @@ stdout_logfile_maxbytes=0
 directory=/opt
 command=/usr/local/bin/python3 /opt/bot/warp_watch.py
 priority=40
+autorestart=true
+startretries=999
+startsecs=1
+redirect_stderr=true
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+
+[program:diag]
+directory=/opt
+command=/usr/local/bin/python3 /opt/bot/diag.py
+priority=50
 autorestart=true
 startretries=999
 startsecs=1
